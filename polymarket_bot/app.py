@@ -21,6 +21,8 @@ from polymarket_bot.models import (
     SignalEvent, TradeDecision, TradeExecution, ArbitrageOpportunity,
 )
 from polymarket_bot.notifications.base import NotificationLevel
+from polymarket_bot.poller import SignalPoller
+from polymarket_bot.scanner import MarketScanner
 from polymarket_bot.signals.base import SignalPlugin
 from polymarket_bot.signals.news import NewsSignal
 from polymarket_bot.signals.social import SocialSignal
@@ -180,6 +182,18 @@ async def run_bot(config_path: str = "config.yaml"):
     await monitor.start()
     console.print("[bold green]Arbitrage monitor started[/]")
 
+    # Market scanner + signal polling loop
+    scanner = MarketScanner(max_markets=50)
+    await scanner.start()
+    poller = SignalPoller(
+        scanner=scanner,
+        plugins=plugins,
+        event_bus=bus,
+        scan_interval=300,    # refresh market list every 5 min
+        signal_interval=120,  # evaluate signals every 2 min
+    )
+    await poller.start()
+
     console.print("\n[bold cyan]Bot is running. Press Ctrl+C to stop.[/]\n")
 
     try:
@@ -189,6 +203,8 @@ async def run_bot(config_path: str = "config.yaml"):
         pass
     finally:
         console.print("\n[bold yellow]Shutting down...[/]")
+        await poller.stop()
+        await scanner.stop()
         await monitor.stop()
         for plugin in plugins:
             await plugin.stop()
