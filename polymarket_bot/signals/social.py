@@ -8,41 +8,28 @@ from polymarket_bot.signals.base import SignalPlugin
 
 logger = logging.getLogger(__name__)
 
+SUBREDDITS = ["polymarket", "predictions", "wallstreetbets", "politics", "crypto", "sports"]
+
 
 class SocialSignal(SignalPlugin):
-    def __init__(self, reddit_client_id: str, reddit_client_secret: str, poll_interval: int = 600):
-        self._reddit_id = reddit_client_id
-        self._reddit_secret = reddit_client_secret
+    def __init__(self, subreddits: list[str] | None = None, poll_interval: int = 600):
+        self._subreddits = subreddits or SUBREDDITS
         self._poll_interval = poll_interval
         self._client: httpx.AsyncClient | None = None
-        self._access_token: str | None = None
 
     @property
     def name(self) -> str:
         return "social"
 
     async def start(self) -> None:
-        self._client = httpx.AsyncClient(timeout=30)
-        await self._authenticate()
+        self._client = httpx.AsyncClient(
+            timeout=30,
+            headers={"User-Agent": "PolymarketBot/0.1 (signal analysis)"},
+        )
 
     async def stop(self) -> None:
         if self._client:
             await self._client.aclose()
-
-    async def _authenticate(self) -> None:
-        if not self._client:
-            return
-        try:
-            resp = await self._client.post(
-                "https://www.reddit.com/api/v1/access_token",
-                data={"grant_type": "client_credentials"},
-                auth=(self._reddit_id, self._reddit_secret),
-                headers={"User-Agent": "PolymarketBot/0.1"},
-            )
-            resp.raise_for_status()
-            self._access_token = resp.json().get("access_token")
-        except Exception:
-            logger.exception("Reddit authentication failed")
 
     async def evaluate(self, market: Market) -> Signal | None:
         posts = await self._fetch_reddit_posts(market.question)
@@ -63,25 +50,35 @@ class SocialSignal(SignalPlugin):
         )
 
     async def _fetch_reddit_posts(self, query: str) -> list[dict]:
-        if not self._client or not self._access_token:
+        if not self._client:
             return []
         keywords = " ".join(query.replace("?", "").split()[:5])
-        try:
-            resp = await self._client.get(
-                "https://oauth.reddit.com/search",
-                params={"q": keywords, "sort": "relevance", "t": "day", "limit": 25},
-                headers={
-                    "Authorization": f"Bearer {self._access_token}",
-                    "User-Agent": "PolymarketBot/0.1",
-                },
-            )
-            resp.raise_for_status()
-            data = resp.json()
-            children = data.get("data", {}).get("children", [])
-            return [c["data"] for c in children]
-        except Exception:
-            logger.exception("Failed to fetch Reddit posts")
-            return []
+        all_posts = []
+
+        for subreddit in self._subreddits:
+            try:
+                resp = await self._client.get(
+                    f"https://www.reddit.com/r/{subreddit}/search.json",
+                    params={
+                        "q": keywords,
+                        "sort": "relevance",
+                        "t": "day",
+                        "restrict_sr": "on",
+                        "limit": 10,
+                    },
+                )
+                if resp.status_code == 429:
+                    logger.warning("Reddit rate limited on r/%s — skipping", subreddit)
+                    continue
+                resp.raise_for_status()
+                data = resp.json()
+                children = data.get("data", {}).get("children", [])
+                all_posts.extend(c["data"] for c in children)
+            except Exception:
+                logger.debug("Failed to fetch from r/%s", subreddit)
+                continue
+
+        return all_posts
 
     def _analyze_posts(self, posts: list[dict], market: Market) -> tuple[Direction, float, str]:
         total_score = 0

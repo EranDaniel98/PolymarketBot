@@ -48,8 +48,7 @@ def build_signal_plugins(config: BotConfig) -> list[SignalPlugin]:
         plugins.append(NewsSignal(api_key=sc.news.newsapi_key, poll_interval=sc.news.poll_interval))
     if sc.social.enabled:
         plugins.append(SocialSignal(
-            reddit_client_id=sc.social.reddit_client_id,
-            reddit_client_secret=sc.social.reddit_client_secret,
+            subreddits=sc.social.subreddits,
             poll_interval=sc.social.poll_interval,
         ))
     if sc.polls.enabled:

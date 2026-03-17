@@ -16,7 +16,7 @@ def market():
 
 @pytest.fixture
 def social_signal():
-    return SocialSignal(reddit_client_id="id", reddit_client_secret="secret")
+    return SocialSignal(subreddits=["polymarket", "crypto"])
 
 
 async def test_social_signal_name(social_signal):

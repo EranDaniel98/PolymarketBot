@@ -42,8 +42,7 @@ class SocialSignalConfig:
     enabled: bool = True
     poll_interval: int = 600
     weight: float = 0.15
-    reddit_client_id: str = ""
-    reddit_client_secret: str = ""
+    subreddits: list[str] | None = None
 
 
 @dataclass
@@ -181,8 +180,6 @@ _ENV_MAP = {
     "POLYMARKET_API_SECRET": ("polymarket", "api_secret"),
     "POLYMARKET_PRIVATE_KEY": ("polymarket", "private_key"),
     "NEWSAPI_KEY": ("signals.news", "newsapi_key"),
-    "REDDIT_CLIENT_ID": ("signals.social", "reddit_client_id"),
-    "REDDIT_CLIENT_SECRET": ("signals.social", "reddit_client_secret"),
     "ANTHROPIC_API_KEY": ("signals.llm", "anthropic_api_key"),
     "ODDS_API_KEY": ("signals.bookmaker", "odds_api_key"),
     "TELEGRAM_BOT_TOKEN": ("notifications.telegram", "bot_token"),

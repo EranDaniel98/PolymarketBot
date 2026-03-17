@@ -14,8 +14,9 @@ signals:
     enabled: true
     poll_interval: 600
     weight: 0.15
-    reddit_client_id: "your-reddit-client-id"
-    reddit_client_secret: "your-reddit-client-secret"
+    # No credentials needed — uses Reddit's public JSON endpoints
+    # Optionally customize which subreddits to monitor:
+    # subreddits: ["polymarket", "predictions", "wallstreetbets", "politics", "crypto", "sports"]
   polls:
     enabled: true
     poll_interval: 3600
