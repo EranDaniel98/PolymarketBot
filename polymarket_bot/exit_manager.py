@@ -1,9 +1,10 @@
 """Exit Strategy Engine — monitors open positions and triggers exits."""
 
 import asyncio
+import json
 import logging
 from datetime import datetime, timezone
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from polymarket_bot.cli import console, format_pnl
 from polymarket_bot.database import Database
@@ -15,11 +16,11 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class ExitRule:
-    take_profit: float = 0.15     # Exit when unrealized P&L > 15%
-    stop_loss: float = -0.10      # Exit when unrealized P&L < -10%
+    take_profit: float = 0.20     # Exit when unrealized P&L > 20%
+    stop_loss: float = -0.15      # Exit when unrealized P&L < -15% (symmetric with TP)
     edge_gone_threshold: float = 0.02  # Exit when market moves to within 2% of entry
     time_decay_hours: int = 24    # Start tightening stops after 24h
-    trailing_stop: float = 0.08   # Trail 8% below peak unrealized P&L
+    trailing_stop: float = 0.10   # Trail 10% below peak unrealized P&L
 
 
 @dataclass
@@ -30,6 +31,8 @@ class TrackedPosition:
     amount: float
     entry_time: datetime
     peak_pnl_pct: float = 0.0
+    tokens: dict[str, str] = field(default_factory=dict)
+    end_date: datetime | None = None
 
 
 class ExitManager:
@@ -53,19 +56,42 @@ class ExitManager:
         """Set function to get current price: fn(platform, market_id) -> float | None"""
         self._price_getter = fn
 
-    def track_entry(self, market_id: str, direction: Direction,
-                    entry_price: float, amount: float) -> None:
+    async def track_entry(self, market_id: str, direction: Direction,
+                          entry_price: float, amount: float,
+                          tokens: dict[str, str] | None = None,
+                          end_date: datetime | None = None) -> None:
         self._positions[market_id] = TrackedPosition(
             market_id=market_id,
             direction=direction,
             entry_price=entry_price,
             amount=amount,
             entry_time=datetime.now(timezone.utc),
+            tokens=tokens or {},
+            end_date=end_date,
+        )
+        await self._db.save_position(
+            market_id, direction.value, amount, entry_price,
+            tokens=json.dumps(tokens or {}),
         )
         logger.info("Tracking position: %s %s @ %.4f", direction.value, market_id, entry_price)
 
-    def track_exit(self, market_id: str) -> None:
+    async def track_exit(self, market_id: str) -> None:
         self._positions.pop(market_id, None)
+        await self._db.delete_position(market_id)
+
+    async def load_from_db(self) -> None:
+        rows = await self._db.load_positions()
+        for row in rows:
+            self._positions[row["market_id"]] = TrackedPosition(
+                market_id=row["market_id"],
+                direction=Direction(row["direction"]),
+                entry_price=row["entry_price"],
+                amount=row["amount"],
+                entry_time=datetime.fromisoformat(row["updated_at"]),
+                peak_pnl_pct=row.get("peak_pnl_pct", 0.0),
+                tokens=json.loads(row.get("tokens", "{}")),
+            )
+        logger.info("Loaded %d positions from DB", len(self._positions))
 
     async def start(self) -> None:
         self._running = True
@@ -79,9 +105,12 @@ class ExitManager:
     async def _monitor_loop(self) -> None:
         while self._running:
             for market_id, pos in list(self._positions.items()):
+                old_peak = pos.peak_pnl_pct
                 exit_reason = await self._check_exit(pos)
                 if exit_reason:
                     await self._trigger_exit(pos, exit_reason)
+                elif pos.peak_pnl_pct > old_peak:
+                    await self._db.update_position_peak(pos.market_id, pos.peak_pnl_pct)
 
             await asyncio.sleep(self._check_interval)
 
@@ -103,13 +132,28 @@ class ExitManager:
         if pnl_pct > pos.peak_pnl_pct:
             pos.peak_pnl_pct = pnl_pct
 
+        # Time-scaled exits: scale TP/SL by days remaining.
+        # Near resolution, WIDEN take-profit (ride winners to settlement)
+        # but TIGHTEN stop-loss (cut losers faster).
+        take_profit = self._rules.take_profit
+        stop_loss = self._rules.stop_loss
+        if pos.end_date:
+            now = datetime.now(timezone.utc)
+            days_remaining = max((pos.end_date - now).total_seconds() / 86400, 0.1)
+            if days_remaining < 3:
+                # Near resolution: ride winners (widen TP), but tighten SL
+                take_profit = 0.50  # Let it run to settlement
+                stop_loss = max(stop_loss, -0.08)  # Cut losers faster
+                logger.debug("Near-resolution exits for %s: TP=%.0f%% SL=%.0f%%",
+                            pos.market_id, take_profit * 100, stop_loss * 100)
+
         # Take profit
-        if pnl_pct >= self._rules.take_profit:
-            return f"Take profit: {pnl_pct:+.1%} (target: {self._rules.take_profit:+.1%})"
+        if pnl_pct >= take_profit:
+            return f"Take profit: {pnl_pct:+.1%} (target: {take_profit:+.1%})"
 
         # Stop loss
-        if pnl_pct <= self._rules.stop_loss:
-            return f"Stop loss: {pnl_pct:+.1%} (limit: {self._rules.stop_loss:+.1%})"
+        if pnl_pct <= stop_loss:
+            return f"Stop loss: {pnl_pct:+.1%} (limit: {stop_loss:+.1%})"
 
         # Trailing stop — only activates after we've had meaningful gains
         if pos.peak_pnl_pct > 0.05:
@@ -139,17 +183,18 @@ class ExitManager:
             f"[bold yellow]EXIT[/] {pos.direction.value} {pos.market_id[:20]} — {reason}"
         )
 
-        # Emit a sell decision (opposite direction)
-        exit_direction = Direction.NO if pos.direction == Direction.YES else Direction.YES
+        # Exit = SELL the same direction token (not flip direction)
         decision = TradeDecision(
             market_id=pos.market_id,
-            direction=exit_direction,
+            direction=pos.direction,
             amount=pos.amount,
-            confidence=0.99,  # High confidence since this is risk management
+            confidence=0.99,
             signals=[],
             order_type=OrderType.LIMIT,
+            tokens=pos.tokens,
+            is_exit=True,
         )
 
         await self._bus.publish("trade_decision", decision)
-        self.track_exit(pos.market_id)
+        await self.track_exit(pos.market_id)
         logger.info("Exit triggered for %s: %s", pos.market_id, reason)

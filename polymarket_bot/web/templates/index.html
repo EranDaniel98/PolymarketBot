@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PolymarketBot Dashboard</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: 'Segoe UI', system-ui, sans-serif; background: #0d1117; color: #c9d1d9; }
+        .container { max-width: 1200px; margin: 0 auto; padding: 20px; }
+        h1 { color: #58a6ff; margin-bottom: 20px; }
+        .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 16px; margin-bottom: 24px; }
+        .stat-card { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 16px; }
+        .stat-label { font-size: 12px; color: #8b949e; text-transform: uppercase; }
+        .stat-value { font-size: 24px; font-weight: bold; margin-top: 4px; }
+        .positive { color: #3fb950; }
+        .negative { color: #f85149; }
+        table { width: 100%; border-collapse: collapse; background: #161b22; border-radius: 8px; overflow: hidden; margin-bottom: 24px; }
+        th { background: #21262d; text-align: left; padding: 12px; font-size: 12px; color: #8b949e; text-transform: uppercase; }
+        td { padding: 10px 12px; border-top: 1px solid #21262d; font-size: 14px; }
+        .section-title { color: #58a6ff; margin-bottom: 12px; font-size: 18px; }
+        .updated { color: #484f58; font-size: 12px; margin-top: 8px; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>PolymarketBot Dashboard</h1>
+        <div class="stats-grid" id="stats"></div>
+        <h2 class="section-title">Open Positions</h2>
+        <table><thead><tr><th>Market</th><th>Side</th><th>Amount</th><th>Entry</th></tr></thead><tbody id="positions"></tbody></table>
+        <h2 class="section-title">Recent Trades</h2>
+        <table><thead><tr><th>Market</th><th>Side</th><th>Amount</th><th>Price</th><th>Status</th><th>P&L</th></tr></thead><tbody id="trades"></tbody></table>
+        <p class="updated" id="updated"></p>
+    </div>
+    <script>
+        async function refresh() {
+            try {
+                const [statsR, posR, tradesR] = await Promise.all([
+                    fetch('/api/stats'), fetch('/api/positions'), fetch('/api/trades')
+                ]);
+                const stats = await statsR.json();
+                const positions = await posR.json();
+                const trades = await tradesR.json();
+
+                document.getElementById('stats').innerHTML = [
+                    card('Daily P&L', `$${stats.daily_pnl.toFixed(2)}`, stats.daily_pnl >= 0),
+                    card('Total P&L', `$${stats.total_pnl.toFixed(2)}`, stats.total_pnl >= 0),
+                    card('Exposure', `$${stats.exposure.toFixed(2)}`),
+                    card('Trades', stats.trade_count),
+                    card('Win Rate', `${(stats.win_rate * 100).toFixed(0)}%`),
+                    card('Positions', stats.open_positions),
+                ].join('');
+
+                document.getElementById('positions').innerHTML = positions.map(p =>
+                    `<tr><td>${(p.market_id||'').slice(0,30)}</td><td>${p.direction}</td><td>$${p.amount.toFixed(2)}</td><td>$${p.entry_price.toFixed(4)}</td></tr>`
+                ).join('') || '<tr><td colspan="4" style="text-align:center;color:#484f58">No open positions</td></tr>';
+
+                document.getElementById('trades').innerHTML = trades.slice(0, 20).map(t =>
+                    `<tr><td>${(t.market_id||'').slice(0,30)}</td><td>${t.direction}</td><td>$${t.amount.toFixed(2)}</td><td>$${t.price.toFixed(4)}</td><td>${t.status}</td><td class="${t.realized_pnl >= 0 ? 'positive' : 'negative'}">$${t.realized_pnl.toFixed(2)}</td></tr>`
+                ).join('') || '<tr><td colspan="6" style="text-align:center;color:#484f58">No trades yet</td></tr>';
+
+                document.getElementById('updated').textContent = `Last updated: ${new Date().toLocaleTimeString()}`;
+            } catch(e) { console.error('Refresh failed:', e); }
+        }
+        function card(label, value, isPositive) {
+            let cls = '';
+            if (isPositive === true) cls = 'positive';
+            else if (isPositive === false) cls = 'negative';
+            return `<div class="stat-card"><div class="stat-label">${label}</div><div class="stat-value ${cls}">${value}</div></div>`;
+        }
+        refresh();
+        setInterval(refresh, 10000);
+    </script>
+</body>
+</html>

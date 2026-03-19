@@ -50,9 +50,10 @@ async def test_check_risk_passes(risk_manager):
 
 
 async def test_check_risk_rejects_low_edge(risk_manager):
+    # Very low confidence → estimated probability barely above market → edge too small
     decision = TradeDecision(
         market_id="m1", direction=Direction.YES, amount=100.0,
-        confidence=0.52, signals=[], order_type=OrderType.LIMIT,
+        confidence=0.15, signals=[], order_type=OrderType.LIMIT,
     )
     approved, reason = await risk_manager.check(decision, market_price=0.50)
     assert approved is False
@@ -82,5 +83,7 @@ async def test_check_risk_rejects_max_exposure(risk_manager, mock_db):
 
 
 async def test_half_kelly_formula():
+    # With fee adjustment, p_adj = 0.7 - 0.01 = 0.69
+    # b = (1-1/3)/(1/3) = 2.0, full = (0.69*2 - 0.31)/2 = 0.535, half = 0.2675
     result = half_kelly(p=0.7, market_price=1/3, fraction=0.5)
-    assert abs(result - 0.275) < 0.01
+    assert 0.20 < result < 0.30

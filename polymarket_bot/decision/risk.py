@@ -1,4 +1,5 @@
 import logging
+import math
 from datetime import datetime, timezone
 
 from polymarket_bot.config import RiskConfig
@@ -7,15 +8,43 @@ from polymarket_bot.models import TradeDecision
 
 logger = logging.getLogger(__name__)
 
+# Polymarket fee: ~2% round-trip (maker + taker)
+ROUND_TRIP_FEE = 0.02
+
 
 def half_kelly(p: float, market_price: float, fraction: float = 0.5) -> float:
-    if market_price <= 0 or market_price >= 1:
+    """Kelly criterion for binary outcome markets, with fee adjustment."""
+    if market_price <= 0 or market_price >= 1 or p <= 0 or p >= 1:
         return 0.0
     b = (1 - market_price) / market_price  # payout odds
-    full_kelly = (p * b - (1 - p)) / b
+    # Adjust probability downward for fees
+    p_adj = p - ROUND_TRIP_FEE / 2
+    if p_adj <= 0:
+        return 0.0
+    full_kelly = (p_adj * b - (1 - p_adj)) / b
     if full_kelly <= 0:
         return 0.0
     return fraction * full_kelly
+
+
+def estimate_true_probability(confidence: float, market_price: float) -> float:
+    """Bayesian-inspired blending of market price with signal confidence.
+
+    Confidence = "how sure we are about our edge", not "probability of YES".
+    We shift the market price toward the signal's implied direction, damped
+    by a logistic function to prevent extreme over-betting.
+
+    At low market prices (0.20), signals have more room to push probability up.
+    At high market prices (0.80), the same confidence produces a smaller shift.
+    """
+    # The signal implies true probability is ABOVE market price (for YES signals).
+    # Map confidence → shift magnitude using sigmoid damping.
+    # Max shift is 15% of the remaining room toward certainty.
+    max_shift = 0.15
+    room = 1.0 - market_price  # room to move up for YES
+    shift = max_shift * room * confidence
+    p_estimated = market_price + shift
+    return max(0.01, min(0.99, p_estimated))
 
 
 class RiskManager:
@@ -33,11 +62,25 @@ class RiskManager:
     async def calculate_position_size(self, confidence: float, market_price: float) -> float:
         trade_count = await self._db.get_trade_count()
 
-        if trade_count < self._config.bootstrap_trades:
-            size = self._bankroll * self._config.bootstrap_size_pct
-        else:
-            fraction = half_kelly(confidence, market_price, self._config.kelly_fraction)
+        bootstrap_pct = self._config.bootstrap_size_pct
+        bootstrap_limit = self._config.bootstrap_trades
+
+        if trade_count >= bootstrap_limit:
+            # Full Kelly sizing
+            p_estimated = estimate_true_probability(confidence, market_price)
+            fraction = half_kelly(p_estimated, market_price, self._config.kelly_fraction)
             size = self._bankroll * fraction
+        elif trade_count >= bootstrap_limit // 2:
+            # Smooth transition: blend bootstrap and Kelly
+            blend = (trade_count - bootstrap_limit // 2) / (bootstrap_limit // 2)
+            bootstrap_size = self._bankroll * bootstrap_pct
+            p_estimated = estimate_true_probability(confidence, market_price)
+            fraction = half_kelly(p_estimated, market_price, self._config.kelly_fraction)
+            kelly_size = self._bankroll * fraction
+            size = bootstrap_size * (1 - blend) + kelly_size * blend
+        else:
+            # Pure bootstrap sizing
+            size = self._bankroll * bootstrap_pct
 
         max_position = self._bankroll * self._config.max_position_pct
         return min(size, max_position)
@@ -61,9 +104,11 @@ class RiskManager:
         if decision.amount > max_position:
             return False, f"Max position: ${decision.amount:.2f} exceeds ${max_position:.2f}"
 
-        # Min edge
-        if abs(decision.confidence - market_price) < self._config.min_edge:
-            return False, f"Insufficient edge: {abs(decision.confidence - market_price):.1%} < {self._config.min_edge:.1%}"
+        # Min edge — check estimated probability vs market, not raw confidence
+        p_est = estimate_true_probability(decision.confidence, market_price)
+        edge = abs(p_est - market_price)
+        if edge < self._config.min_edge:
+            return False, f"Insufficient edge: {edge:.1%} < {self._config.min_edge:.1%}"
 
         # Cooldown
         last_exit = self._cooldowns.get(decision.market_id)

@@ -1,4 +1,5 @@
 import logging
+import re
 from datetime import datetime, timezone
 
 import httpx
@@ -25,6 +26,9 @@ class PollSignal(SignalPlugin):
         if self._client:
             await self._client.aclose()
 
+    def can_evaluate(self, market: Market) -> bool:
+        return market.category in ("politics", "election", "policy")
+
     async def evaluate(self, market: Market) -> Signal | None:
         poll_data = await self._fetch_poll_data(market)
         if poll_data is None:
@@ -50,14 +54,58 @@ class PollSignal(SignalPlugin):
             timestamp=datetime.now(timezone.utc),
         )
 
+    def _extract_search_terms(self, question: str) -> str:
+        # Remove common filler words, keep meaningful terms
+        stop_words = {
+            "will", "the", "be", "in", "of", "to", "a", "an", "is", "by",
+            "win", "for", "on", "at", "and", "or", "this", "that", "who",
+        }
+        words = re.findall(r'\b[A-Za-z]+\b', question)
+        keywords = [w for w in words if w.lower() not in stop_words and len(w) > 2]
+        return " ".join(keywords[:5])
+
     async def _fetch_poll_data(self, market: Market) -> dict | None:
         if not self._client:
             return None
         if market.category not in ("politics", "election", "policy"):
             return None
+
+        keywords = self._extract_search_terms(market.question)
+        if not keywords:
+            return None
+
         try:
-            logger.debug("Poll fetch not yet connected to live source for: %s", market.question)
+            # Try RealClearPolitics polling search
+            resp = await self._client.get(
+                "https://www.realclearpolling.com/api/polls/search",
+                params={"q": keywords},
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                if data and isinstance(data, list) and len(data) > 0:
+                    avg = data[0].get("rcp_average", data[0].get("average", 0))
+                    if avg and avg > 0:
+                        return {
+                            "implied_probability": avg / 100,
+                            "source": "RCP Average",
+                        }
+
+            # Fallback: try 270toWin aggregate
+            resp2 = await self._client.get(
+                "https://www.270towin.com/api/polls",
+                params={"q": keywords},
+            )
+            if resp2.status_code == 200:
+                data2 = resp2.json()
+                if data2 and isinstance(data2, list) and len(data2) > 0:
+                    avg = data2[0].get("average", 0)
+                    if avg and avg > 0:
+                        return {
+                            "implied_probability": avg / 100,
+                            "source": "270toWin",
+                        }
+
             return None
         except Exception:
-            logger.exception("Failed to fetch poll data")
+            logger.debug("Poll data fetch failed for: %s", market.question)
             return None

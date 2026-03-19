@@ -15,3 +15,7 @@ class SignalPlugin(ABC):
 
     @abstractmethod
     async def evaluate(self, market: Market) -> Signal | None: ...
+
+    def can_evaluate(self, market: Market) -> bool:
+        """Return False to skip this market entirely. Default: evaluate all markets."""
+        return True

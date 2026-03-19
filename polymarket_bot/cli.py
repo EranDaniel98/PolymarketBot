@@ -140,6 +140,24 @@ def build_dashboard_table(positions: list[dict], pnl: float, exposure: float, ba
     return table
 
 
+def build_full_dashboard(
+    positions: list[dict], pnl: float, exposure: float, bankroll: float,
+    trade_count: int, uptime_seconds: float, paper_mode: bool,
+) -> Table:
+    mode = "[bold yellow]PAPER[/]" if paper_mode else "[bold green]LIVE[/]"
+    hours = int(uptime_seconds // 3600)
+    mins = int((uptime_seconds % 3600) // 60)
+
+    table = build_dashboard_table(positions, pnl, exposure, bankroll)
+    table.caption = (
+        f"  {mode} | Bankroll: ${bankroll:.2f} | "
+        f"Daily P&L: {format_pnl(pnl)} | "
+        f"Trades: {trade_count} | "
+        f"Uptime: {hours}h{mins}m"
+    )
+    return table
+
+
 def get_log_handler() -> RichHandler:
     return RichHandler(
         console=console,

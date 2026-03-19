@@ -51,6 +51,8 @@ CREATE TABLE IF NOT EXISTS portfolio (
     direction TEXT NOT NULL,
     amount REAL NOT NULL,
     entry_price REAL NOT NULL,
+    peak_pnl_pct REAL DEFAULT 0.0,
+    tokens TEXT DEFAULT '{}',
     updated_at TEXT NOT NULL
 );
 
@@ -74,7 +76,32 @@ CREATE TABLE IF NOT EXISTS orders (
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS signal_outcomes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    source TEXT NOT NULL,
+    market_id TEXT NOT NULL,
+    predicted_direction TEXT NOT NULL,
+    confidence REAL NOT NULL,
+    market_price_at_signal REAL,
+    actual_outcome TEXT,
+    was_correct INTEGER,
+    signal_timestamp TEXT NOT NULL,
+    resolved_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS market_resolutions (
+    market_id TEXT PRIMARY KEY,
+    outcome TEXT NOT NULL,
+    resolved_at TEXT NOT NULL
+);
 """
+
+MIGRATIONS = [
+    # Add peak_pnl_pct and tokens columns if missing (idempotent)
+    "ALTER TABLE portfolio ADD COLUMN peak_pnl_pct REAL DEFAULT 0.0",
+    "ALTER TABLE portfolio ADD COLUMN tokens TEXT DEFAULT '{}'",
+]
 
 
 class Database:
@@ -88,6 +115,15 @@ class Database:
         self._db.row_factory = aiosqlite.Row
         await self._db.executescript(SCHEMA)
         await self._db.commit()
+        await self._run_migrations()
+
+    async def _run_migrations(self) -> None:
+        for sql in MIGRATIONS:
+            try:
+                await self._db.execute(sql)
+                await self._db.commit()
+            except Exception:
+                pass  # Column already exists
 
     async def close(self) -> None:
         if self._db:
@@ -114,6 +150,8 @@ class Database:
         )
         return [r["name"] for r in rows]
 
+    # --- Signals ---
+
     async def save_signal(self, signal: Signal) -> None:
         await self._write(
             "INSERT INTO signals (source, market_id, direction, confidence, reasoning, timestamp) "
@@ -128,6 +166,8 @@ class Database:
             "SELECT * FROM signals WHERE market_id = ? AND timestamp >= ? ORDER BY timestamp DESC",
             (market_id, since),
         )
+
+    # --- Trades ---
 
     async def save_trade(self, trade: TradeExecution) -> None:
         await self._write(
@@ -146,7 +186,6 @@ class Database:
         return await self._fetch_all("SELECT * FROM trades ORDER BY timestamp DESC")
 
     async def get_daily_pnl(self) -> float:
-        """Sum realized P&L for today from the explicit realized_pnl column."""
         today = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0).isoformat()
         row = await self._fetch_one(
             "SELECT COALESCE(SUM(realized_pnl), 0) as pnl "
@@ -164,8 +203,132 @@ class Database:
         row = await self._fetch_one("SELECT COUNT(*) as cnt FROM trades")
         return row["cnt"] if row else 0
 
+    async def get_daily_trades(self) -> list[dict]:
+        today = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0).isoformat()
+        return await self._fetch_all(
+            "SELECT * FROM trades WHERE timestamp >= ? ORDER BY timestamp DESC", (today,)
+        )
+
+    async def get_total_pnl(self) -> float:
+        row = await self._fetch_one(
+            "SELECT COALESCE(SUM(realized_pnl), 0) as pnl FROM trades"
+        )
+        return row["pnl"] if row else 0.0
+
+    async def get_win_rate(self) -> float:
+        row = await self._fetch_one(
+            "SELECT COUNT(*) as total, "
+            "SUM(CASE WHEN realized_pnl > 0 THEN 1 ELSE 0 END) as wins "
+            "FROM trades WHERE status = 'filled' AND realized_pnl != 0"
+        )
+        if not row or row["total"] == 0:
+            return 0.0
+        return row["wins"] / row["total"]
+
+    # --- Prices ---
+
     async def save_price(self, platform: str, market_id: str, price: float) -> None:
         await self._write(
             "INSERT INTO prices (platform, market_id, price, timestamp) VALUES (?, ?, ?, ?)",
             (platform, market_id, price, datetime.now(timezone.utc).isoformat()),
         )
+
+    # --- Portfolio (Position Persistence) ---
+
+    async def save_position(self, market_id: str, direction: str, amount: float,
+                            entry_price: float, peak_pnl_pct: float = 0.0,
+                            tokens: str = "{}") -> None:
+        await self._write(
+            "INSERT OR REPLACE INTO portfolio "
+            "(market_id, direction, amount, entry_price, peak_pnl_pct, tokens, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (market_id, direction, amount, entry_price, peak_pnl_pct, tokens,
+             datetime.now(timezone.utc).isoformat()),
+        )
+
+    async def load_positions(self) -> list[dict]:
+        return await self._fetch_all("SELECT * FROM portfolio")
+
+    async def delete_position(self, market_id: str) -> None:
+        await self._write("DELETE FROM portfolio WHERE market_id = ?", (market_id,))
+
+    async def update_position_peak(self, market_id: str, peak_pnl_pct: float) -> None:
+        await self._write(
+            "UPDATE portfolio SET peak_pnl_pct = ?, updated_at = ? WHERE market_id = ?",
+            (peak_pnl_pct, datetime.now(timezone.utc).isoformat(), market_id),
+        )
+
+    # --- Signal Outcomes (Accuracy Tracking) ---
+
+    async def save_signal_outcome(
+        self, source: str, market_id: str, predicted_direction: str,
+        confidence: float, market_price: float | None, timestamp: datetime,
+    ) -> None:
+        await self._write(
+            "INSERT INTO signal_outcomes "
+            "(source, market_id, predicted_direction, confidence, market_price_at_signal, signal_timestamp) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (source, market_id, predicted_direction, confidence, market_price, timestamp.isoformat()),
+        )
+
+    async def record_resolution(self, market_id: str, outcome: str) -> None:
+        now = datetime.now(timezone.utc).isoformat()
+        async with self._write_lock:
+            await self._db.execute(
+                "INSERT OR REPLACE INTO market_resolutions (market_id, outcome, resolved_at) "
+                "VALUES (?, ?, ?)",
+                (market_id, outcome, now),
+            )
+            # Backfill signal_outcomes for this market
+            await self._db.execute(
+                "UPDATE signal_outcomes SET actual_outcome = ?, resolved_at = ?, "
+                "was_correct = CASE "
+                "  WHEN (predicted_direction = 'YES' AND ? = 'Yes') THEN 1 "
+                "  WHEN (predicted_direction = 'NO' AND ? = 'No') THEN 1 "
+                "  ELSE 0 "
+                "END "
+                "WHERE market_id = ? AND actual_outcome IS NULL",
+                (outcome, now, outcome, outcome, market_id),
+            )
+            await self._db.commit()
+
+    async def get_signal_accuracy(self, source: str, min_signals: int = 10) -> dict | None:
+        row = await self._fetch_one(
+            "SELECT COUNT(*) as n, "
+            "SUM(CASE WHEN was_correct = 1 THEN 1 ELSE 0 END) as correct, "
+            "AVG(confidence) as avg_conf "
+            "FROM signal_outcomes WHERE source = ? AND was_correct IS NOT NULL",
+            (source,),
+        )
+        if not row or row["n"] < min_signals:
+            return None
+        return {
+            "accuracy": row["correct"] / row["n"],
+            "n_signals": row["n"],
+            "avg_confidence": row["avg_conf"],
+        }
+
+    async def get_accuracy_report(self) -> dict[str, dict]:
+        rows = await self._fetch_all(
+            "SELECT source, COUNT(*) as n, "
+            "SUM(CASE WHEN was_correct = 1 THEN 1 ELSE 0 END) as correct, "
+            "AVG(confidence) as avg_conf "
+            "FROM signal_outcomes WHERE was_correct IS NOT NULL "
+            "GROUP BY source"
+        )
+        report = {}
+        for row in rows:
+            report[row["source"]] = {
+                "accuracy": row["correct"] / row["n"] if row["n"] > 0 else 0,
+                "n_signals": row["n"],
+                "avg_confidence": row["avg_conf"],
+            }
+        return report
+
+    async def get_unresolved_market_ids(self) -> list[str]:
+        rows = await self._fetch_all(
+            "SELECT DISTINCT so.market_id FROM signal_outcomes so "
+            "LEFT JOIN market_resolutions mr ON so.market_id = mr.market_id "
+            "WHERE mr.market_id IS NULL"
+        )
+        return [r["market_id"] for r in rows]

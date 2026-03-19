@@ -71,6 +71,8 @@ class SignalPoller:
 
     async def _evaluate_loop_once(self, market: "Market", plugin: "SignalPlugin") -> None:
         """Evaluate a single plugin against a single market. Used by the loop and tests."""
+        if not plugin.can_evaluate(market):
+            return
         try:
             signal = await plugin.evaluate(market)
             if signal and signal.confidence >= 0.1:

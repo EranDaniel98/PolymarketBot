@@ -19,6 +19,7 @@ class TelegramNotifier(Notifier):
         self._chat_id = chat_id
         self._approval_timeout = approval_timeout
         self._bot = None
+        self._app = None
         self._pending_approvals: dict[str, asyncio.Future] = {}
 
     @property
@@ -27,22 +28,55 @@ class TelegramNotifier(Notifier):
 
     async def start(self) -> None:
         try:
-            from telegram import Bot
-            self._bot = Bot(token=self._bot_token)
-            logger.info("Telegram notifier started")
+            from telegram.ext import ApplicationBuilder, CallbackQueryHandler
+
+            self._app = ApplicationBuilder().token(self._bot_token).build()
+            self._app.add_handler(CallbackQueryHandler(self._on_callback))
+            await self._app.initialize()
+            await self._app.start()
+            await self._app.updater.start_polling(drop_pending_updates=True)
+            self._bot = self._app.bot
+            logger.info("Telegram notifier started with inline buttons")
         except Exception:
             logger.exception("Failed to start Telegram bot")
 
     async def stop(self) -> None:
+        if self._app:
+            try:
+                await self._app.updater.stop()
+                await self._app.stop()
+                await self._app.shutdown()
+            except Exception:
+                logger.debug("Telegram shutdown error (non-critical)")
         self._bot = None
+        self._app = None
 
-    async def _send_message(self, text: str, parse_mode: str = "HTML") -> None:
+    async def _on_callback(self, update, context) -> None:
+        query = update.callback_query
+        if not query or not query.data:
+            return
+        parts = query.data.split(":", 1)
+        if len(parts) != 2:
+            return
+        action, market_id = parts
+        if action == "approve":
+            self.resolve_approval(market_id, True)
+            await query.answer("Trade approved!")
+            await query.edit_message_reply_markup(reply_markup=None)
+        elif action == "reject":
+            self.resolve_approval(market_id, False)
+            await query.answer("Trade rejected.")
+            await query.edit_message_reply_markup(reply_markup=None)
+
+    async def _send_message(self, text: str, parse_mode: str = "HTML",
+                            reply_markup=None) -> None:
         if not self._bot:
             logger.warning("Telegram bot not initialized — message: %s", text[:100])
             return
         try:
             await self._bot.send_message(
-                chat_id=self._chat_id, text=text, parse_mode=parse_mode,
+                chat_id=self._chat_id, text=text,
+                parse_mode=parse_mode, reply_markup=reply_markup,
             )
         except Exception:
             logger.exception("Failed to send Telegram message")
@@ -65,7 +99,22 @@ class TelegramNotifier(Notifier):
         )
         await self._send_message(text)
 
+    async def send_daily_report(self, stats: dict) -> None:
+        pnl_emoji = "\U0001f4c8" if stats["daily_pnl"] >= 0 else "\U0001f4c9"
+        text = (
+            f"{pnl_emoji} <b>Daily Report</b>\n\n"
+            f"Daily P&L: <b>${stats['daily_pnl']:+.2f}</b>\n"
+            f"Total P&L: <b>${stats['total_pnl']:+.2f}</b>\n"
+            f"Trades Today: {stats['trade_count']}\n"
+            f"Win Rate: {stats['win_rate']:.0%}\n"
+            f"Open Positions: {stats['open_positions']}\n"
+            f"Bankroll: <b>${stats['bankroll']:.2f}</b>"
+        )
+        await self._send_message(text)
+
     async def _send_approval_message(self, decision: TradeDecision) -> None:
+        from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+
         signal_summary = ", ".join(
             f"{s.source}({s.confidence:.0%})" for s in decision.signals[:5]
         )
@@ -76,15 +125,17 @@ class TelegramNotifier(Notifier):
             f"Amount: <b>${decision.amount:.2f}</b>\n"
             f"Confidence: <b>{decision.confidence:.0%}</b>\n"
             f"Signals: {signal_summary or 'N/A'}\n\n"
-            f"Reply YES to approve, NO to reject.\n"
             f"Auto-cancels in {self._approval_timeout}s."
         )
-        await self._send_message(text)
+        keyboard = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("Approve", callback_data=f"approve:{decision.market_id}"),
+                InlineKeyboardButton("Reject", callback_data=f"reject:{decision.market_id}"),
+            ]
+        ])
+        await self._send_message(text, reply_markup=keyboard)
 
     async def _wait_for_response(self, market_id: str) -> bool | None:
-        # TODO v2: Wire up telegram.ext.Application with CallbackQueryHandler
-        # for inline button approval. For v1, approvals always time out
-        # (auto-cancel), which is the safe default per the spec's timeout design.
         try:
             future = asyncio.get_running_loop().create_future()
             self._pending_approvals[market_id] = future

@@ -37,6 +37,7 @@ async def test_execute_trade_success(engine, mock_bus, mock_db):
     decision = TradeDecision(
         market_id="m1", direction=Direction.YES, amount=100.0,
         confidence=0.85, signals=[], order_type=OrderType.LIMIT,
+        tokens={"YES": "0xa", "NO": "0xb"},
     )
     with patch.object(engine, "_place_order", new_callable=AsyncMock,
                      return_value=("ord123", 0.50, OrderStatus.FILLED)):
@@ -49,7 +50,47 @@ async def test_execute_trade_slippage_reject(engine, mock_bus):
     decision = TradeDecision(
         market_id="m1", direction=Direction.YES, amount=100.0,
         confidence=0.85, signals=[], order_type=OrderType.MARKET,
+        tokens={"YES": "0xa", "NO": "0xb"},
     )
     with patch.object(engine, "_get_best_price", new_callable=AsyncMock, return_value=0.55):
         await engine.execute(decision, current_price=0.50)
         mock_bus.publish.assert_not_called()
+
+
+async def test_paper_trading_mode(mock_db, mock_bus):
+    config = ExecutionConfig(paper_trading=True)
+    engine = ExecutionEngine(config=config, database=mock_db, event_bus=mock_bus)
+    tokens = {"YES": "0xa", "NO": "0xb"}
+
+    order_id, price, status = await engine._place_order(
+        tokens, Direction.YES, 12.0, 0.50, OrderType.LIMIT,
+    )
+    assert order_id.startswith("paper_")
+    assert status == OrderStatus.FILLED
+    assert abs(price - 0.50) < 0.01
+
+
+async def test_paper_trading_exit(mock_db, mock_bus):
+    config = ExecutionConfig(paper_trading=True)
+    engine = ExecutionEngine(config=config, database=mock_db, event_bus=mock_bus)
+    tokens = {"YES": "0xa", "NO": "0xb"}
+
+    order_id, price, status = await engine._place_order(
+        tokens, Direction.YES, 12.0, 0.50, OrderType.LIMIT, is_exit=True,
+    )
+    assert order_id.startswith("paper_")
+    assert status == OrderStatus.FILLED
+
+
+async def test_execute_with_is_exit(engine, mock_bus, mock_db):
+    decision = TradeDecision(
+        market_id="m1", direction=Direction.YES, amount=100.0,
+        confidence=0.99, signals=[], order_type=OrderType.LIMIT,
+        tokens={"YES": "0xa", "NO": "0xb"}, is_exit=True,
+    )
+    with patch.object(engine, "_place_order", new_callable=AsyncMock,
+                     return_value=("ord456", 0.55, OrderStatus.FILLED)) as mock_place:
+        await engine.execute(decision, current_price=0.55)
+        # Verify is_exit was passed through
+        call_kwargs = mock_place.call_args
+        assert call_kwargs[0][5] is True or call_kwargs[1].get("is_exit") is True

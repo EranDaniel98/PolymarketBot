@@ -96,11 +96,11 @@ class NewsSignal(SignalPlugin):
 
         if positive > negative:
             ratio = positive / total
-            confidence = min(ratio * 0.9, 0.95)
+            confidence = min(ratio * 0.5, 0.60)
             direction = Direction.YES
         else:
             ratio = negative / total
-            confidence = min(ratio * 0.9, 0.95)
+            confidence = min(ratio * 0.5, 0.60)
             direction = Direction.NO
 
         reasoning = f"Analyzed {len(articles)} articles. Sentiment: {positive}+ / {negative}-. Headlines: {'; '.join(titles[:3])}"

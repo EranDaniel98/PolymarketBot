@@ -13,7 +13,7 @@ class MarketFilter:
         self,
         min_price: float = 0.05,
         max_price: float = 0.95,
-        max_days_to_end: int = 90,
+        max_days_to_end: int = 365,
         min_days_to_end: int = 1,
     ):
         self._min_price = min_price
@@ -31,23 +31,32 @@ class MarketFilter:
 
         scored.sort(key=lambda x: x[0], reverse=True)
         filtered = [m for _, m in scored]
-        logger.info("Filtered %d → %d markets", len(markets), len(filtered))
+        logger.info("Filtered %d -> %d markets", len(markets), len(filtered))
         return filtered
 
     def _score_market(self, market: Market) -> float:
         score = 0.0
 
-        # Filter: price must be in tradeable range (not near 0 or 1)
-        if market.current_price < self._min_price or market.current_price > self._max_price:
-            return 0.0
-
         # Filter: must have tokens
         if not market.tokens:
             return 0.0
 
-        # Score: prefer prices near 0.5 (maximum uncertainty = maximum edge opportunity)
-        uncertainty = 1.0 - abs(market.current_price - 0.5) * 2
-        score += uncertainty * 30  # 0-30 points
+        # Filter: price must be in tradeable range
+        # Allow extreme prices (0.02-0.98) through with lower score for FLB strategy
+        p = market.current_price
+        if p < 0.02 or p > 0.98:
+            return 0.0
+
+        # Score: prefer markets where price leans but might be wrong (0.15-0.40, 0.60-0.85).
+        # Markets at 0.50 are maximally efficient — hardest to find edge.
+        if (0.15 <= p <= 0.40) or (0.60 <= p <= 0.85):
+            score += 30  # Best edge potential — market has a lean that may be wrong
+        elif 0.40 < p < 0.60:
+            score += 15  # Efficient range — less likely to find edge
+        elif (p > 0.90 or p < 0.10) and market.volume >= 5000:
+            score += 20  # FLB territory — extreme prices with liquidity
+        else:
+            score += 5   # Very extreme or low volume — some edge but risky
 
         # Score: time to resolution — prefer markets resolving soon but not too soon
         now = datetime.now(timezone.utc)

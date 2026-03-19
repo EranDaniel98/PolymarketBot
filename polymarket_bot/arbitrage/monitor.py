@@ -37,6 +37,8 @@ class PriceMonitor:
         self._ws_task: asyncio.Task | None = None
         self._poll_task: asyncio.Task | None = None
         self._max_price_age = poll_interval * 3
+        self._subscribed_ids: list[str] = []
+        self._token_to_market: dict[str, str] = {}  # token_id -> condition_id
 
     async def start(self) -> None:
         self._running = True
@@ -53,13 +55,30 @@ class PriceMonitor:
         if self._http_client:
             await self._http_client.aclose()
 
+    def subscribe_markets(self, market_ids: list[str],
+                          token_to_market: dict[str, str] | None = None) -> None:
+        if token_to_market:
+            self._token_to_market.update(token_to_market)
+        new_ids = [mid for mid in market_ids if mid not in self._subscribed_ids]
+        if not new_ids:
+            return
+        self._subscribed_ids = list(set(self._subscribed_ids + market_ids))
+        # Restart WS to subscribe new IDs
+        if self._ws_task and not self._ws_task.done():
+            self._ws_task.cancel()
+            self._ws_task = asyncio.create_task(self._subscribe_polymarket())
+        # Immediately fetch prices for newly subscribed markets
+        asyncio.create_task(self._poll_polymarket_prices())
+        logger.info("Subscribed to %d market price feeds", len(self._subscribed_ids))
+
     def get_cached_price(self, platform: str, polymarket_id: str) -> float | None:
         price = self._prices.get(polymarket_id, {}).get(platform)
         if price is None:
             return None
         ts = self._price_timestamps.get(polymarket_id, {}).get(platform, 0)
         if time.time() - ts > self._max_price_age:
-            logger.warning("Stale price for %s/%s (age %.0fs)", platform, polymarket_id, time.time() - ts)
+            logger.warning("Stale price for %s/%s (age %.0fs)",
+                          platform, polymarket_id, time.time() - ts)
             return None
         return price
 
@@ -71,15 +90,16 @@ class PriceMonitor:
         self._price_timestamps[polymarket_id][platform] = time.time()
 
     async def _subscribe_polymarket(self) -> None:
-        market_ids = self._mapper.all_polymarket_ids()
-        if not market_ids:
-            logger.info("No market mappings configured — skipping Polymarket WS")
+        # Combine mapper IDs and subscribed IDs
+        all_ids = list(set(self._mapper.all_polymarket_ids() + self._subscribed_ids))
+        if not all_ids:
+            logger.info("No market IDs to subscribe — skipping Polymarket WS")
             return
 
         while self._running:
             try:
                 async with websockets.connect(POLYMARKET_WS) as ws:
-                    for mid in market_ids:
+                    for mid in all_ids:
                         await ws.send(json.dumps({
                             "type": "subscribe",
                             "market": mid,
@@ -89,16 +109,23 @@ class PriceMonitor:
                         if not self._running:
                             break
                         data = json.loads(message)
-                        market_id = data.get("market")
+                        token_id = data.get("market")
                         price = data.get("price")
-                        if market_id and price is not None:
-                            self._update_price("polymarket", market_id, float(price))
+                        if token_id and price is not None:
+                            # Map token_id to condition_id if known
+                            store_id = self._token_to_market.get(token_id, token_id)
+                            self._update_price("polymarket", store_id, float(price))
+            except asyncio.CancelledError:
+                return
             except Exception:
                 logger.exception("Polymarket WS connection error — reconnecting in 5s")
                 await asyncio.sleep(5)
 
     async def _poll_external_platforms(self) -> None:
         while self._running:
+            # Poll prices for all subscribed IDs via REST as fallback
+            await self._poll_polymarket_prices()
+
             for poly_id in self._mapper.all_polymarket_ids():
                 mappings = self._mapper.get_mappings(poly_id)
                 for platform, platform_id in mappings.items():
@@ -116,6 +143,30 @@ class PriceMonitor:
                         await self._bus.publish("arb_opportunity", opp)
 
             await asyncio.sleep(self._poll_interval)
+
+    async def _poll_polymarket_prices(self) -> None:
+        """Fallback: poll prices via REST for subscribed markets without recent WS data."""
+        if not self._http_client:
+            return
+        for token_id in self._subscribed_ids:
+            # Resolve to condition_id for storage
+            condition_id = self._token_to_market.get(token_id, token_id)
+            # Skip if we have a fresh price
+            ts = self._price_timestamps.get(condition_id, {}).get("polymarket", 0)
+            if time.time() - ts < self._poll_interval:
+                continue
+            try:
+                resp = await self._http_client.get(
+                    f"https://clob.polymarket.com/midpoint",
+                    params={"token_id": token_id},
+                )
+                if resp.status_code == 200:
+                    data = resp.json()
+                    mid = data.get("mid")
+                    if mid is not None:
+                        self._update_price("polymarket", condition_id, float(mid))
+            except Exception:
+                pass
 
     async def _fetch_platform_price(self, platform: str, platform_id: str) -> float | None:
         try:

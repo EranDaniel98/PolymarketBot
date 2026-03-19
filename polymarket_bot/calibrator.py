@@ -6,11 +6,12 @@ from polymarket_bot.database import Database
 logger = logging.getLogger(__name__)
 
 DEFAULT_WEIGHTS = {
-    "news": 0.2,
-    "social": 0.15,
-    "polls": 0.25,
     "llm": 0.25,
-    "bookmaker": 0.15,
+    "favorite_longshot": 0.20,
+    "weather": 0.20,
+    "divergence": 0.15,
+    "polls": 0.10,
+    "bookmaker": 0.10,
 }
 
 
@@ -43,59 +44,17 @@ class WeightCalibrator:
         return False
 
     async def _compute_weights(self) -> dict[str, float] | None:
-        """Compute weights based on signal accuracy.
-
-        For each signal source, measure what fraction of its signals
-        correctly predicted the market direction (price moved in the
-        signal's predicted direction).
-        """
-        signals = await self._db._fetch_all(
-            "SELECT source, direction, market_id, confidence "
-            "FROM signals ORDER BY timestamp DESC LIMIT 500"
-        )
-
-        if not signals:
+        """Compute weights based on signal outcome accuracy."""
+        report = await self._db.get_accuracy_report()
+        if not report:
             return None
 
-        # Group signals by source and check accuracy
-        source_stats: dict[str, dict] = {}
-        for sig in signals:
-            source = sig["source"]
-            if source not in source_stats:
-                source_stats[source] = {"correct": 0, "total": 0, "avg_confidence": 0.0}
-            source_stats[source]["total"] += 1
-            source_stats[source]["avg_confidence"] += sig["confidence"]
-
-        # Normalize average confidence
-        for source, stats in source_stats.items():
-            if stats["total"] > 0:
-                stats["avg_confidence"] /= stats["total"]
-
-        # Check which signals led to profitable trades
-        trades = await self._db._fetch_all(
-            "SELECT market_id, direction, realized_pnl "
-            "FROM trades WHERE status = 'filled' ORDER BY timestamp DESC LIMIT 200"
-        )
-
-        trade_outcomes: dict[str, float] = {}
-        for trade in trades:
-            trade_outcomes[trade["market_id"]] = trade.get("realized_pnl", 0)
-
-        # For each signal, check if the resulting trade was profitable
-        for sig in signals:
-            source = sig["source"]
-            market_id = sig["market_id"]
-            if market_id in trade_outcomes:
-                if trade_outcomes[market_id] > 0:
-                    source_stats[source]["correct"] += 1
-
-        # Compute accuracy-based weights
         raw_weights = {}
-        for source, stats in source_stats.items():
-            if stats["total"] >= 5:  # Need at least 5 signals to score
-                accuracy = stats["correct"] / stats["total"] if stats["total"] > 0 else 0
-                # Weight = accuracy * average confidence (reward accurate AND confident signals)
-                raw_weights[source] = max(accuracy * stats["avg_confidence"], 0.05)
+        for source, stats in report.items():
+            if stats["n_signals"] >= 5:
+                accuracy = stats["accuracy"]
+                avg_conf = stats["avg_confidence"] or 0.5
+                raw_weights[source] = max(accuracy * avg_conf, 0.05)
             else:
                 raw_weights[source] = DEFAULT_WEIGHTS.get(source, 0.1)
 

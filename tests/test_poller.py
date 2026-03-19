@@ -17,6 +17,9 @@ class FakePlugin:
     def name(self) -> str:
         return self._name
 
+    def can_evaluate(self, market) -> bool:
+        return True
+
     async def evaluate(self, market):
         return self._signal
 
