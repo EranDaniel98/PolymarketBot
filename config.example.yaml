@@ -42,14 +42,14 @@ arbitrage:
       enabled: true
 
 risk:
-  max_position_pct: 0.05
-  max_exposure_pct: 0.50
-  max_daily_loss_pct: 0.10
-  max_correlated_exposure_pct: 0.15
-  min_edge: 0.03
+  max_position_pct: 0.10          # Max 10% per market ($30 on $300 bankroll)
+  max_exposure_pct: 0.60          # Max 60% total exposure
+  max_daily_loss_pct: 0.08        # Circuit breaker at 8% daily loss ($24)
+  max_correlated_exposure_pct: 0.20
+  min_edge: 0.05                  # Only trade with ≥5% edge (more selective with small bankroll)
   kelly_fraction: 0.5
-  bootstrap_trades: 50
-  bootstrap_size_pct: 0.01
+  bootstrap_trades: 20            # Fewer bootstrap trades before switching to Kelly
+  bootstrap_size_pct: 0.04        # 4% per trade during bootstrap ($12 — above $10 minimum)
   cooldown_seconds: 300
 
 execution:
@@ -68,5 +68,5 @@ notifications:
     webhook_url: ""
 
 confidence_thresholds:
-  auto_execute: 0.8
-  notify: 0.5
+  auto_execute: 0.85              # Higher bar for auto-trades (protect small bankroll)
+  notify: 0.55                    # Notify you on medium-confidence for manual decision
