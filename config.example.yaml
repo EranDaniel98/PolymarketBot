@@ -6,35 +6,77 @@ polymarket:
 
 signals:
   news:
-    enabled: true
+    enabled: false                  # Disabled — keyword matching is noise, LLM reads headlines directly
     poll_interval: 300
-    weight: 0.2
+    weight: 0.00
     newsapi_key: "your-newsapi-key"
   social:
-    enabled: true
+    enabled: false                  # Disabled — Reddit sentiment is lagging/contrarian
     poll_interval: 600
-    weight: 0.15
-    # No credentials needed — uses Reddit's public JSON endpoints
-    # Optionally customize which subreddits to monitor:
-    # subreddits: ["polymarket", "predictions", "wallstreetbets", "politics", "crypto", "sports"]
+    weight: 0.00
   polls:
     enabled: true
     poll_interval: 3600
-    weight: 0.25
+    weight: 0.10
   llm:
     enabled: true
     weight: 0.25
-    model: "claude-sonnet-4-6-20250514"
+    model: "claude-opus-4-6-20250514"
+    screening_model: "claude-haiku-4-5-20250514"  # Cheap screening before expensive Opus calls
     anthropic_api_key: "your-anthropic-key"
+    openai_api_key: "your-openai-key"
+    ensemble_enabled: true
+    aggregation: "trimmed_mean"
+    ensemble_models:
+      - provider: "anthropic"
+        model: "claude-opus-4-6-20250514"
+        weight: 0.40
+      - provider: "openai"
+        model: "gpt-4o"
+        weight: 0.35
+      - provider: "anthropic"
+        model: "claude-sonnet-4-6-20250514"
+        weight: 0.25
   bookmaker:
     enabled: true
     poll_interval: 60
-    weight: 0.15
+    weight: 0.10
     odds_api_key: "your-odds-api-key"
+  favorite_longshot:
+    enabled: true                   # Zero-cost signal exploiting favorite-longshot bias
+    weight: 0.20
+    min_price_short: 0.92           # Short contracts above this price
+    max_price_long: 0.08            # Buy contracts below this price
+    min_volume: 5000                # Minimum market volume for liquidity
+    min_days: 3                     # Minimum days to resolution
+  divergence:
+    enabled: true                   # Cross-platform divergence (Metaculus + Manifold)
+    weight: 0.15
+    min_divergence: 0.08            # Minimum price gap to trigger
+    min_forecasters: 50             # Minimum forecaster count on other platform
+    min_days: 3
+  weather:
+    enabled: true                   # Weather forecast vs market price (73% documented win rate)
+    weight: 0.20
+  whale:
+    enabled: true
+    weight: 0.15
+    poll_interval: 30
+    single_trade_threshold: 10000
+    cumulative_threshold: 25000
+    window_seconds: 300
+  fast_trader:
+    enabled: false                  # Disabled — fires on Reddit headlines, false positives
 
 arbitrage:
   poll_interval: 30
   min_spread: 0.05
+  structural_arb:
+    enabled: true
+    fee_rate: 0.02
+    min_profit_pct: 0.005
+    max_position_usd: 50
+    cancel_timeout: 60
   platforms:
     kalshi:
       enabled: true
@@ -46,7 +88,7 @@ risk:
   max_exposure_pct: 0.60          # Max 60% total exposure
   max_daily_loss_pct: 0.08        # Circuit breaker at 8% daily loss ($24)
   max_correlated_exposure_pct: 0.20
-  min_edge: 0.05                  # Only trade with ≥5% edge (more selective with small bankroll)
+  min_edge: 0.05                  # Only trade with >=5% edge (more selective with small bankroll)
   kelly_fraction: 0.5
   bootstrap_trades: 20            # Fewer bootstrap trades before switching to Kelly
   bootstrap_size_pct: 0.04        # 4% per trade during bootstrap ($12 — above $10 minimum)
@@ -56,6 +98,7 @@ execution:
   default_order_type: "limit"
   max_slippage: 0.01
   max_retries: 3
+  paper_trading: true             # Set to false for real trading with real money
 
 notifications:
   telegram:
@@ -70,3 +113,8 @@ notifications:
 confidence_thresholds:
   auto_execute: 0.85              # Higher bar for auto-trades (protect small bankroll)
   notify: 0.55                    # Notify you on medium-confidence for manual decision
+
+web:
+  enabled: false                  # Set to true to enable web dashboard
+  host: "127.0.0.1"
+  port: 8080

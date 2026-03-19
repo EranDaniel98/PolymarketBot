@@ -1,4 +1,5 @@
 import logging
+import math
 from datetime import datetime, timezone
 
 from polymarket_bot.config import ConfidenceThresholds, SignalsConfig
@@ -11,6 +12,10 @@ from polymarket_bot.models import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _clamp(x: float, lo: float = 0.01, hi: float = 0.99) -> float:
+    return max(lo, min(hi, x))
 
 
 class DecisionEngine:
@@ -32,43 +37,69 @@ class DecisionEngine:
             "polls": signals_config.polls.weight,
             "llm": signals_config.llm.weight,
             "bookmaker": signals_config.bookmaker.weight,
+            "favorite_longshot": signals_config.favorite_longshot.weight,
+            "divergence": signals_config.divergence.weight,
+            "weather": signals_config.weather.weight,
+            "whale": signals_config.whale.weight,
         }
 
+    def _freshness_factor(self, signal: Signal) -> float:
+        """Exponential decay based on signal age (half-life = 2 hours)."""
+        age_minutes = (datetime.now(timezone.utc) - signal.timestamp).total_seconds() / 60
+        return math.exp(-age_minutes / 120)
+
     def aggregate_signals(self, signals: list[Signal]) -> float:
+        """Aggregate signals using log-odds for proper probability combination.
+
+        Returns a composite confidence in [0, 1]. Higher = stronger agreement
+        in the majority direction.
+        """
         if not signals:
             return 0.0
 
-        yes_score = 0.0
-        no_score = 0.0
-        total_weight = 0.0
+        # Use log-odds aggregation: convert each signal's confidence to
+        # log-odds, weight them, then convert back. This properly handles
+        # combining evidence from multiple sources without the linear
+        # averaging bugs (e.g. NO signals being inverted).
+        yes_log_odds = 0.0
+        no_log_odds = 0.0
 
         for signal in signals:
-            weight = self._weights.get(signal.source, 0.1)
-            total_weight += weight
+            weight = self._weights.get(signal.source, 0.1) * self._freshness_factor(signal)
+            # Convert confidence to log-odds contribution
+            c = _clamp(signal.confidence)
+            log_odds = math.log(c / (1 - c)) * weight
             if signal.direction == Direction.YES:
-                yes_score += weight * signal.confidence
+                yes_log_odds += log_odds
             else:
-                no_score += weight * signal.confidence
+                no_log_odds += log_odds
 
-        if total_weight == 0:
-            return 0.0
+        # The composite is the strength of the majority direction
+        net_log_odds = abs(yes_log_odds - no_log_odds)
+        composite = 1.0 / (1.0 + math.exp(-net_log_odds))
 
-        yes_composite = yes_score / total_weight
-        no_composite = no_score / total_weight
+        # Consensus discount: only when 3+ signals agree AND total sources > 3
+        # (correlated signals shouldn't stack confidence linearly)
+        majority_dir = Direction.YES if yes_log_odds >= no_log_odds else Direction.NO
+        agreeing_count = sum(1 for s in signals if s.direction == majority_dir)
+        total_sources = len({s.source for s in signals})
+        if agreeing_count >= 3 and total_sources <= agreeing_count:
+            composite *= 0.90
+            logger.info("Consensus discount: %d/%d sources agree", agreeing_count, total_sources)
 
-        if yes_composite >= no_composite:
-            return yes_composite
-        return 1.0 - no_composite
+        return composite
 
     def determine_majority_direction(self, signals: list[Signal]) -> Direction:
         yes_weight = 0.0
         no_weight = 0.0
         for signal in signals:
-            w = self._weights.get(signal.source, 0.1)
+            w = self._weights.get(signal.source, 0.1) * self._freshness_factor(signal)
+            c = _clamp(signal.confidence)
+            log_odds = math.log(c / (1 - c)) * w
             if signal.direction == Direction.YES:
-                yes_weight += w * signal.confidence
+                yes_weight += log_odds
             else:
-                no_weight += w * signal.confidence
+                no_weight += log_odds
         return Direction.YES if yes_weight >= no_weight else Direction.NO
 
     def determine_action(self, composite_confidence: float) -> str:
@@ -86,6 +117,14 @@ class DecisionEngine:
         signal = signal_event.signal
         market = signal_event.market
         await self._db.save_signal(signal)
+        await self._db.save_signal_outcome(
+            source=signal.source,
+            market_id=signal.market_id,
+            predicted_direction=signal.direction.value,
+            confidence=signal.confidence,
+            market_price=market.current_price,
+            timestamp=signal.timestamp,
+        )
 
         recent_rows = await self._db.get_signals(market.id)
         recent_signals = [signal]
@@ -111,6 +150,15 @@ class DecisionEngine:
         composite = self.aggregate_signals(recent_signals)
         action = self.determine_action(composite)
 
+        # Multi-signal gate: require 2+ distinct sources for auto_execute
+        distinct_sources = {s.source for s in recent_signals}
+        if action == "auto_execute" and len(distinct_sources) < self._thresholds.min_signal_sources:
+            logger.warning(
+                "Downgraded auto_execute->notify for %s: only %d source(s) (%s)",
+                market.id, len(distinct_sources), ", ".join(distinct_sources),
+            )
+            action = "notify"
+
         if action == "log_only":
             logger.info("Low confidence %.2f for %s — logging only", composite, market.id)
             return
@@ -125,6 +173,7 @@ class DecisionEngine:
             confidence=composite,
             signals=recent_signals,
             order_type=OrderType.LIMIT,
+            tokens=market.tokens,
         )
 
         approved, reason = await self._risk.check(decision, market.current_price)

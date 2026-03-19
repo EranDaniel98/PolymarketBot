@@ -44,7 +44,10 @@ class Market:
     end_date: datetime
     tokens: dict[str, str]
     current_price: float
+    no_price: float = 0.0
     category: str = ""
+    description: str = ""
+    volume: float = 0.0
     correlation_tags: list[str] = field(default_factory=list)
     platform_mappings: dict[str, str] = field(default_factory=dict)
 
@@ -74,6 +77,8 @@ class TradeDecision:
     confidence: float
     signals: list[Signal]
     order_type: OrderType
+    tokens: dict[str, str] = field(default_factory=dict)
+    is_exit: bool = False
     arb_opportunity: ArbitrageOpportunity | None = None
 
 

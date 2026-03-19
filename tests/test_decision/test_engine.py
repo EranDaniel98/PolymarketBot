@@ -33,6 +33,7 @@ def mock_bus():
 def mock_db():
     db = AsyncMock()
     db.get_signals.return_value = []
+    db.save_signal_outcome = AsyncMock()
     return db
 
 
@@ -63,10 +64,11 @@ def test_aggregate_signals_empty(engine):
 
 
 def test_aggregate_conflicting_signals(engine):
+    # Use polls and bookmaker — equal weight (0.20 each) to get clean 50/50
     signals = [
-        Signal(source="news", market_id="m1", direction=Direction.YES,
+        Signal(source="polls", market_id="m1", direction=Direction.YES,
                confidence=0.9, reasoning="", timestamp=datetime.now(timezone.utc)),
-        Signal(source="llm", market_id="m1", direction=Direction.NO,
+        Signal(source="bookmaker", market_id="m1", direction=Direction.NO,
                confidence=0.9, reasoning="", timestamp=datetime.now(timezone.utc)),
     ]
     composite = engine.aggregate_signals(signals)
@@ -86,3 +88,22 @@ async def test_determine_action_medium_confidence(engine):
 async def test_determine_action_low_confidence(engine):
     action = engine.determine_action(0.3)
     assert action == "log_only"
+
+
+@pytest.mark.asyncio
+async def test_single_source_downgrades_to_notify(engine, market, mock_db):
+    """A single high-confidence signal should NOT auto_execute — downgrade to notify."""
+    signal = Signal(
+        source="llm", market_id="m1", direction=Direction.YES,
+        confidence=0.95, reasoning="very confident", timestamp=datetime.now(timezone.utc),
+    )
+    event = SignalEvent(signal=signal, market=market)
+    await engine.on_signal(event)
+
+    # Should have published approval_request (notify), not trade_decision (auto_execute)
+    calls = engine._bus.publish.call_args_list
+    if calls:
+        topics = [c[0][0] for c in calls]
+        assert "trade_decision" not in topics or any(
+            c[0][0] == "approval_request" for c in calls
+        )

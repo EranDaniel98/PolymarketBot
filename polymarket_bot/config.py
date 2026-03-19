@@ -31,17 +31,17 @@ class PolymarketConfig:
 
 @dataclass
 class NewsSignalConfig:
-    enabled: bool = True
+    enabled: bool = False
     poll_interval: int = 300
-    weight: float = 0.2
+    weight: float = 0.00
     newsapi_key: str = ""
 
 
 @dataclass
 class SocialSignalConfig:
-    enabled: bool = True
+    enabled: bool = False
     poll_interval: int = 600
-    weight: float = 0.15
+    weight: float = 0.00
     subreddits: list[str] | None = None
 
 
@@ -49,23 +49,69 @@ class SocialSignalConfig:
 class PollSignalConfig:
     enabled: bool = True
     poll_interval: int = 3600
-    weight: float = 0.25
+    weight: float = 0.10
 
 
 @dataclass
 class LLMSignalConfig:
     enabled: bool = True
     weight: float = 0.25
-    model: str = "claude-sonnet-4-6-20250514"
+    model: str = "claude-opus-4-6-20250514"
+    screening_model: str = "claude-haiku-4-5-20250514"
     anthropic_api_key: str = ""
+    openai_api_key: str = ""
+    ensemble_enabled: bool = False
+    aggregation: str = "trimmed_mean"
+    ensemble_models: list[dict] | None = None
 
 
 @dataclass
 class BookmakerSignalConfig:
     enabled: bool = True
     poll_interval: int = 60
-    weight: float = 0.15
+    weight: float = 0.10
     odds_api_key: str = ""
+
+
+@dataclass
+class FavoriteLongshotConfig:
+    enabled: bool = True
+    weight: float = 0.20
+    min_price_short: float = 0.92
+    max_price_long: float = 0.08
+    min_volume: float = 5000
+    min_days: int = 3
+
+
+@dataclass
+class DivergenceConfig:
+    enabled: bool = True
+    weight: float = 0.15
+    min_divergence: float = 0.08
+    min_forecasters: int = 50
+    min_days: int = 3
+
+
+@dataclass
+class WeatherConfig:
+    enabled: bool = True
+    weight: float = 0.20
+
+
+@dataclass
+class WhaleSignalConfig:
+    enabled: bool = False
+    weight: float = 0.15
+    poll_interval: int = 30
+    single_trade_threshold: float = 10000
+    cumulative_threshold: float = 25000
+    window_seconds: int = 300
+    tracked_wallets: list[str] | None = None
+
+
+@dataclass
+class FastTraderConfig:
+    enabled: bool = False
 
 
 @dataclass
@@ -75,6 +121,11 @@ class SignalsConfig:
     polls: PollSignalConfig = None
     llm: LLMSignalConfig = None
     bookmaker: BookmakerSignalConfig = None
+    favorite_longshot: FavoriteLongshotConfig = None
+    divergence: DivergenceConfig = None
+    weather: WeatherConfig = None
+    whale: WhaleSignalConfig = None
+    fast_trader: FastTraderConfig = None
 
     def __post_init__(self):
         self.news = self.news or NewsSignalConfig()
@@ -82,6 +133,11 @@ class SignalsConfig:
         self.polls = self.polls or PollSignalConfig()
         self.llm = self.llm or LLMSignalConfig()
         self.bookmaker = self.bookmaker or BookmakerSignalConfig()
+        self.favorite_longshot = self.favorite_longshot or FavoriteLongshotConfig()
+        self.divergence = self.divergence or DivergenceConfig()
+        self.weather = self.weather or WeatherConfig()
+        self.whale = self.whale or WhaleSignalConfig()
+        self.fast_trader = self.fast_trader or FastTraderConfig()
 
 
 @dataclass
@@ -102,6 +158,7 @@ class ExecutionConfig:
     default_order_type: str = "limit"
     max_slippage: float = 0.01
     max_retries: int = 3
+    paper_trading: bool = True
 
 
 @dataclass
@@ -132,12 +189,33 @@ class NotificationsConfig:
 class ConfidenceThresholds:
     auto_execute: float = 0.8
     notify: float = 0.5
+    min_signal_sources: int = 2
+
+
+@dataclass
+class StructuralArbConfig:
+    enabled: bool = True
+    fee_rate: float = 0.02
+    min_profit_pct: float = 0.005
+    max_position_usd: float = 50.0
+    cancel_timeout: int = 60
 
 
 @dataclass
 class ArbitrageConfig:
     poll_interval: int = 30
     min_spread: float = 0.05
+    structural_arb: StructuralArbConfig = None
+
+    def __post_init__(self):
+        self.structural_arb = self.structural_arb or StructuralArbConfig()
+
+
+@dataclass
+class WebConfig:
+    enabled: bool = False
+    host: str = "127.0.0.1"
+    port: int = 8080
 
 
 @dataclass
@@ -149,6 +227,7 @@ class BotConfig:
     notifications: NotificationsConfig = None
     confidence_thresholds: ConfidenceThresholds = None
     arbitrage: ArbitrageConfig = None
+    web: WebConfig = None
 
     def __post_init__(self):
         self.polymarket = self.polymarket or PolymarketConfig()
@@ -158,6 +237,7 @@ class BotConfig:
         self.notifications = self.notifications or NotificationsConfig()
         self.confidence_thresholds = self.confidence_thresholds or ConfidenceThresholds()
         self.arbitrage = self.arbitrage or ArbitrageConfig()
+        self.web = self.web or WebConfig()
 
 
 def _dict_to_dataclass(cls, data: dict):
@@ -181,6 +261,7 @@ _ENV_MAP = {
     "POLYMARKET_PRIVATE_KEY": ("polymarket", "private_key"),
     "NEWSAPI_KEY": ("signals.news", "newsapi_key"),
     "ANTHROPIC_API_KEY": ("signals.llm", "anthropic_api_key"),
+    "OPENAI_API_KEY": ("signals.llm", "openai_api_key"),
     "ODDS_API_KEY": ("signals.bookmaker", "odds_api_key"),
     "TELEGRAM_BOT_TOKEN": ("notifications.telegram", "bot_token"),
     "TELEGRAM_CHAT_ID": ("notifications.telegram", "chat_id"),

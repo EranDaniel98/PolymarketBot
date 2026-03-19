@@ -45,8 +45,6 @@ class MarketScanner:
                         "closed": "false",
                         "limit": limit,
                         "offset": offset,
-                        "order": "volume_24hr",
-                        "ascending": "false",
                     },
                 )
                 resp.raise_for_status()
@@ -84,26 +82,44 @@ class MarketScanner:
 
             tokens = {}
             current_price = 0.5
-            for token in market_data.get("clobTokenIds", market_data.get("tokens", [])) or []:
+
+            # Parse clobTokenIds — may be a JSON string or a list
+            raw_clob = market_data.get("clobTokenIds", market_data.get("tokens"))
+            clob_ids = []
+            if isinstance(raw_clob, str):
+                try:
+                    import json as _json
+                    clob_ids = _json.loads(raw_clob)
+                except Exception:
+                    pass
+            elif isinstance(raw_clob, list):
+                clob_ids = raw_clob
+
+            # Handle list of dicts (token objects) or list of strings (token IDs)
+            for token in clob_ids:
                 if isinstance(token, dict):
                     outcome = token.get("outcome", "")
                     tokens[outcome] = token.get("token_id", "")
                     if outcome == "Yes":
                         current_price = float(token.get("price", 0.5))
 
-            # If tokens came as a simple list of IDs
-            if not tokens and isinstance(market_data.get("clobTokenIds"), list):
-                clob_ids = market_data["clobTokenIds"]
-                if len(clob_ids) >= 2:
-                    tokens = {"YES": clob_ids[0], "NO": clob_ids[1]}
+            # If tokens are just a flat list of IDs (YES first, NO second)
+            if not tokens and len(clob_ids) >= 2 and isinstance(clob_ids[0], str):
+                tokens = {"YES": clob_ids[0], "NO": clob_ids[1]}
 
             # Try to get price from outcomePrices
+            no_price = 0.0
             outcome_prices = market_data.get("outcomePrices")
             if outcome_prices and isinstance(outcome_prices, list) and len(outcome_prices) >= 1:
                 try:
                     current_price = float(outcome_prices[0])
                 except (ValueError, TypeError):
                     pass
+                if len(outcome_prices) >= 2:
+                    try:
+                        no_price = float(outcome_prices[1])
+                    except (ValueError, TypeError):
+                        pass
             elif isinstance(outcome_prices, str):
                 # Sometimes it's a JSON string
                 try:
@@ -111,6 +127,8 @@ class MarketScanner:
                     prices = json.loads(outcome_prices)
                     if prices:
                         current_price = float(prices[0])
+                    if len(prices) >= 2:
+                        no_price = float(prices[1])
                 except Exception:
                     pass
 
@@ -136,13 +154,25 @@ class MarketScanner:
                 else:
                     category = str(tags[0])
 
+            # Parse description and volume
+            description = market_data.get("description", "")
+            volume = 0.0
+            raw_volume = market_data.get("volume", market_data.get("volume24hr", 0))
+            try:
+                volume = float(raw_volume) if raw_volume else 0.0
+            except (ValueError, TypeError):
+                pass
+
             return Market(
                 id=condition_id,
                 question=question,
                 end_date=end_date,
                 tokens=tokens,
                 current_price=current_price,
+                no_price=no_price,
                 category=category.lower(),
+                description=description,
+                volume=volume,
             )
         except Exception:
             logger.debug("Failed to parse market: %s", market_data.get("question", "unknown"))
