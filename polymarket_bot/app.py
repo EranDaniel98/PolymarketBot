@@ -20,6 +20,10 @@ from polymarket_bot.arbitrage.monitor import PriceMonitor
 from polymarket_bot.models import (
     SignalEvent, TradeDecision, TradeExecution, ArbitrageOpportunity,
 )
+from polymarket_bot.calibrator import WeightCalibrator
+from polymarket_bot.exit_manager import ExitManager
+from polymarket_bot.fast_trader import FastTrader
+from polymarket_bot.market_filter import MarketFilter
 from polymarket_bot.notifications.base import NotificationLevel
 from polymarket_bot.poller import SignalPoller
 from polymarket_bot.scanner import MarketScanner
@@ -97,6 +101,9 @@ async def run_bot(config_path: str = "config.yaml"):
     console.print(f"[bold green]Wallet balance:[/] ${bankroll:.2f}")
     risk_manager = RiskManager(config=config.risk, database=db, bankroll=bankroll)
 
+    # Weight calibrator — auto-adjusts signal weights based on track record
+    calibrator = WeightCalibrator(database=db, min_samples=20, recalibrate_every=10)
+
     # Decision engine
     decision_engine = DecisionEngine(
         risk_manager=risk_manager, event_bus=bus, database=db,
@@ -131,6 +138,10 @@ async def run_bot(config_path: str = "config.yaml"):
         poll_interval=config.arbitrage.poll_interval,
     )
 
+    # Exit manager — monitors positions and triggers sells
+    exit_mgr = ExitManager(event_bus=bus, database=db, check_interval=30)
+    exit_mgr.set_price_getter(monitor.get_cached_price)
+
     # Wire event handlers
     bus.subscribe("signal", decision_engine.on_signal)
     bus.subscribe("arb_opportunity", decision_engine.on_arb_opportunity)
@@ -159,9 +170,20 @@ async def run_bot(config_path: str = "config.yaml"):
     async def on_trade_execution(execution: TradeExecution):
         print_trade_execution(execution.market_id, execution.direction.value,
                              execution.amount, execution.price)
+        # Track new entries for exit management
+        exit_mgr.track_entry(
+            execution.market_id, execution.direction,
+            execution.price, execution.amount,
+        )
         new_balance = await exec_engine.get_balance()
         if new_balance and new_balance > 0:
             risk_manager.update_bankroll(new_balance)
+        # Recalibrate signal weights based on performance
+        recalibrated = await calibrator.maybe_recalibrate()
+        if recalibrated:
+            decision_engine._weights = calibrator.weights
+            console.print("[cyan]Signal weights recalibrated:[/] " +
+                         ", ".join(f"{k}={v:.0%}" for k, v in calibrator.weights.items()))
         for notifier in notifiers:
             await notifier.send_trade_notification(
                 execution.market_id, execution.direction.value,
@@ -178,21 +200,34 @@ async def run_bot(config_path: str = "config.yaml"):
         await plugin.start()
         console.print(f"[bold green]Signal plugin started:[/] [cyan]{plugin.name}[/]")
 
-    # Start arbitrage monitor
+    # Start arbitrage monitor and exit manager
     await monitor.start()
     console.print("[bold green]Arbitrage monitor started[/]")
+    await exit_mgr.start()
+    console.print("[bold green]Exit manager started[/]")
 
-    # Market scanner + signal polling loop
+    # Market scanner + smart filtering + signal polling loop
     scanner = MarketScanner(max_markets=50)
     await scanner.start()
+    market_filter = MarketFilter()
     poller = SignalPoller(
         scanner=scanner,
         plugins=plugins,
         event_bus=bus,
+        market_filter=market_filter,
         scan_interval=300,    # refresh market list every 5 min
         signal_interval=120,  # evaluate signals every 2 min
     )
     await poller.start()
+
+    # Fast trader — monitors breaking news every 20s for rapid trades
+    fast_trader = FastTrader(
+        event_bus=bus,
+        markets=poller._markets,
+        poll_interval=20,
+        newsapi_key=config.signals.news.newsapi_key if config.signals.news.enabled else "",
+    )
+    await fast_trader.start()
 
     console.print("\n[bold cyan]Bot is running. Press Ctrl+C to stop.[/]\n")
 
@@ -203,7 +238,9 @@ async def run_bot(config_path: str = "config.yaml"):
         pass
     finally:
         console.print("\n[bold yellow]Shutting down...[/]")
+        await fast_trader.stop()
         await poller.stop()
+        await exit_mgr.stop()
         await scanner.stop()
         await monitor.stop()
         for plugin in plugins:

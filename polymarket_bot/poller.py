@@ -5,6 +5,7 @@ import logging
 
 from polymarket_bot.cli import console, print_signal
 from polymarket_bot.event_bus import EventBus
+from polymarket_bot.market_filter import MarketFilter
 from polymarket_bot.models import Market, SignalEvent
 from polymarket_bot.scanner import MarketScanner
 from polymarket_bot.signals.base import SignalPlugin
@@ -18,12 +19,14 @@ class SignalPoller:
         scanner: MarketScanner,
         plugins: list[SignalPlugin],
         event_bus: EventBus,
+        market_filter: MarketFilter | None = None,
         scan_interval: int = 300,
         signal_interval: int = 120,
     ):
         self._scanner = scanner
         self._plugins = plugins
         self._bus = event_bus
+        self._filter = market_filter or MarketFilter()
         self._scan_interval = scan_interval
         self._signal_interval = signal_interval
         self._markets: list[Market] = []
@@ -33,8 +36,9 @@ class SignalPoller:
 
     async def start(self) -> None:
         self._running = True
-        # Do initial scan immediately
-        self._markets = await self._scanner.fetch_active_markets()
+        # Do initial scan immediately, then filter
+        raw_markets = await self._scanner.fetch_active_markets()
+        self._markets = self._filter.filter_and_rank(raw_markets)
         console.print(f"[bold green]Tracking {len(self._markets)} active markets[/]")
         # Start background loops
         self._scan_task = asyncio.create_task(self._scan_loop())
@@ -52,7 +56,8 @@ class SignalPoller:
         while self._running:
             await asyncio.sleep(self._scan_interval)
             try:
-                new_markets = await self._scanner.fetch_active_markets()
+                raw = await self._scanner.fetch_active_markets()
+                new_markets = self._filter.filter_and_rank(raw) if raw else []
                 if new_markets:
                     old_count = len(self._markets)
                     self._markets = new_markets

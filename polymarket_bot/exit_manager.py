@@ -1,0 +1,155 @@
+"""Exit Strategy Engine — monitors open positions and triggers exits."""
+
+import asyncio
+import logging
+from datetime import datetime, timezone
+from dataclasses import dataclass
+
+from polymarket_bot.cli import console, format_pnl
+from polymarket_bot.database import Database
+from polymarket_bot.event_bus import EventBus
+from polymarket_bot.models import Direction, OrderType, TradeDecision
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass
+class ExitRule:
+    take_profit: float = 0.15     # Exit when unrealized P&L > 15%
+    stop_loss: float = -0.10      # Exit when unrealized P&L < -10%
+    edge_gone_threshold: float = 0.02  # Exit when market moves to within 2% of entry
+    time_decay_hours: int = 24    # Start tightening stops after 24h
+    trailing_stop: float = 0.08   # Trail 8% below peak unrealized P&L
+
+
+@dataclass
+class TrackedPosition:
+    market_id: str
+    direction: Direction
+    entry_price: float
+    amount: float
+    entry_time: datetime
+    peak_pnl_pct: float = 0.0
+
+
+class ExitManager:
+    def __init__(
+        self,
+        event_bus: EventBus,
+        database: Database,
+        rules: ExitRule | None = None,
+        check_interval: int = 30,
+    ):
+        self._bus = event_bus
+        self._db = database
+        self._rules = rules or ExitRule()
+        self._check_interval = check_interval
+        self._positions: dict[str, TrackedPosition] = {}
+        self._running = False
+        self._task: asyncio.Task | None = None
+        self._price_getter = None  # Set by app.py to monitor.get_cached_price
+
+    def set_price_getter(self, fn) -> None:
+        """Set function to get current price: fn(platform, market_id) -> float | None"""
+        self._price_getter = fn
+
+    def track_entry(self, market_id: str, direction: Direction,
+                    entry_price: float, amount: float) -> None:
+        self._positions[market_id] = TrackedPosition(
+            market_id=market_id,
+            direction=direction,
+            entry_price=entry_price,
+            amount=amount,
+            entry_time=datetime.now(timezone.utc),
+        )
+        logger.info("Tracking position: %s %s @ %.4f", direction.value, market_id, entry_price)
+
+    def track_exit(self, market_id: str) -> None:
+        self._positions.pop(market_id, None)
+
+    async def start(self) -> None:
+        self._running = True
+        self._task = asyncio.create_task(self._monitor_loop())
+
+    async def stop(self) -> None:
+        self._running = False
+        if self._task:
+            self._task.cancel()
+
+    async def _monitor_loop(self) -> None:
+        while self._running:
+            for market_id, pos in list(self._positions.items()):
+                exit_reason = await self._check_exit(pos)
+                if exit_reason:
+                    await self._trigger_exit(pos, exit_reason)
+
+            await asyncio.sleep(self._check_interval)
+
+    async def _check_exit(self, pos: TrackedPosition) -> str | None:
+        if not self._price_getter:
+            return None
+
+        current_price = self._price_getter("polymarket", pos.market_id)
+        if current_price is None:
+            return None
+
+        # Calculate unrealized P&L percentage
+        if pos.direction == Direction.YES:
+            pnl_pct = (current_price - pos.entry_price) / pos.entry_price
+        else:
+            pnl_pct = (pos.entry_price - current_price) / pos.entry_price
+
+        # Update peak P&L for trailing stop
+        if pnl_pct > pos.peak_pnl_pct:
+            pos.peak_pnl_pct = pnl_pct
+
+        # Take profit
+        if pnl_pct >= self._rules.take_profit:
+            return f"Take profit: {pnl_pct:+.1%} (target: {self._rules.take_profit:+.1%})"
+
+        # Stop loss
+        if pnl_pct <= self._rules.stop_loss:
+            return f"Stop loss: {pnl_pct:+.1%} (limit: {self._rules.stop_loss:+.1%})"
+
+        # Trailing stop — only activates after we've had meaningful gains
+        if pos.peak_pnl_pct > 0.05:
+            trailing_trigger = pos.peak_pnl_pct - self._rules.trailing_stop
+            if pnl_pct <= trailing_trigger:
+                return (f"Trailing stop: {pnl_pct:+.1%} "
+                        f"(peak was {pos.peak_pnl_pct:+.1%}, trail: {self._rules.trailing_stop:.0%})")
+
+        # Edge gone — price moved to roughly where we entered
+        if pos.direction == Direction.YES:
+            edge_remaining = current_price - pos.entry_price
+        else:
+            edge_remaining = pos.entry_price - current_price
+
+        hours_held = (datetime.now(timezone.utc) - pos.entry_time).total_seconds() / 3600
+        edge_threshold = self._rules.edge_gone_threshold
+        if hours_held > self._rules.time_decay_hours:
+            edge_threshold *= 1.5  # Tighten after holding too long
+
+        if abs(edge_remaining) < edge_threshold and hours_held > 1:
+            return f"Edge gone: remaining edge {edge_remaining:+.3f} < {edge_threshold:.3f} after {hours_held:.0f}h"
+
+        return None
+
+    async def _trigger_exit(self, pos: TrackedPosition, reason: str) -> None:
+        console.print(
+            f"[bold yellow]EXIT[/] {pos.direction.value} {pos.market_id[:20]} — {reason}"
+        )
+
+        # Emit a sell decision (opposite direction)
+        exit_direction = Direction.NO if pos.direction == Direction.YES else Direction.YES
+        decision = TradeDecision(
+            market_id=pos.market_id,
+            direction=exit_direction,
+            amount=pos.amount,
+            confidence=0.99,  # High confidence since this is risk management
+            signals=[],
+            order_type=OrderType.LIMIT,
+        )
+
+        await self._bus.publish("trade_decision", decision)
+        self.track_exit(pos.market_id)
+        logger.info("Exit triggered for %s: %s", pos.market_id, reason)
