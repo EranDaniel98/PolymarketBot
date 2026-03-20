@@ -20,6 +20,8 @@
         td { padding: 10px 12px; border-top: 1px solid #21262d; font-size: 14px; }
         .section-title { color: #58a6ff; margin-bottom: 12px; font-size: 18px; }
         .updated { color: #484f58; font-size: 12px; margin-top: 8px; }
+        a.market-link { color: #58a6ff; text-decoration: none; }
+        a.market-link:hover { text-decoration: underline; }
     </style>
 </head>
 <body>
@@ -52,15 +54,20 @@
                 ].join('');
 
                 document.getElementById('positions').innerHTML = positions.map(p =>
-                    `<tr><td>${(p.market_id||'').slice(0,30)}</td><td>${p.direction}</td><td>$${p.amount.toFixed(2)}</td><td>$${p.entry_price.toFixed(4)}</td></tr>`
+                    `<tr><td>${marketLink(p.market_id, p.question)}</td><td>${p.direction}</td><td>$${p.amount.toFixed(2)}</td><td>$${p.entry_price.toFixed(4)}</td></tr>`
                 ).join('') || '<tr><td colspan="4" style="text-align:center;color:#484f58">No open positions</td></tr>';
 
                 document.getElementById('trades').innerHTML = trades.slice(0, 20).map(t =>
-                    `<tr><td>${(t.market_id||'').slice(0,30)}</td><td>${t.direction}</td><td>$${t.amount.toFixed(2)}</td><td>$${t.price.toFixed(4)}</td><td>${t.status}</td><td class="${t.realized_pnl >= 0 ? 'positive' : 'negative'}">$${t.realized_pnl.toFixed(2)}</td></tr>`
+                    `<tr><td>${marketLink(t.market_id, t.question)}</td><td>${t.direction}</td><td>$${t.amount.toFixed(2)}</td><td>$${t.price.toFixed(4)}</td><td>${t.status}</td><td class="${t.realized_pnl >= 0 ? 'positive' : 'negative'}">$${t.realized_pnl.toFixed(2)}</td></tr>`
                 ).join('') || '<tr><td colspan="6" style="text-align:center;color:#484f58">No trades yet</td></tr>';
 
                 document.getElementById('updated').textContent = `Last updated: ${new Date().toLocaleTimeString()}`;
             } catch(e) { console.error('Refresh failed:', e); }
+        }
+        function marketLink(id, question) {
+            const label = question || (id || '').slice(0, 30);
+            const url = `https://polymarket.com/event/${id}`;
+            return `<a class="market-link" href="${url}" target="_blank" title="${id}">${label}</a>`;
         }
         function card(label, value, isPositive) {
             let cls = '';

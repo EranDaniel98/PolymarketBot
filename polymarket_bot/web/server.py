@@ -16,6 +16,10 @@ def get_exit_mgr():
     return app.state.exit_mgr
 
 
+def get_market_cache() -> dict:
+    return getattr(app.state, "market_cache", {})
+
+
 @app.get("/api/stats")
 async def stats():
     db = get_db()
@@ -33,13 +37,25 @@ async def stats():
 @app.get("/api/positions")
 async def positions():
     db = get_db()
-    return await db.load_positions()
+    cache = get_market_cache()
+    rows = await db.load_positions()
+    for row in rows:
+        mid = row.get("market_id", "")
+        market = cache.get(mid)
+        row["question"] = market.question if market else ""
+    return rows
 
 
 @app.get("/api/trades")
 async def trades():
     db = get_db()
-    return (await db.get_trades())[:50]
+    cache = get_market_cache()
+    rows = (await db.get_trades())[:50]
+    for row in rows:
+        mid = row.get("market_id", "")
+        market = cache.get(mid)
+        row["question"] = market.question if market else ""
+    return rows
 
 
 @app.get("/", response_class=HTMLResponse)

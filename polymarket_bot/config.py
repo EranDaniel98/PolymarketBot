@@ -56,8 +56,8 @@ class PollSignalConfig:
 class LLMSignalConfig:
     enabled: bool = True
     weight: float = 0.25
-    model: str = "claude-opus-4-6-20250514"
-    screening_model: str = "claude-haiku-4-5-20250514"
+    model: str = "claude-sonnet-4-20250514"
+    screening_model: str = "claude-3-haiku-20240307"
     anthropic_api_key: str = ""
     openai_api_key: str = ""
     ensemble_enabled: bool = False

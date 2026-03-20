@@ -376,6 +376,7 @@ async def run_bot(config_path: str = "config.yaml"):
             from polymarket_bot.web.server import app as web_app
             web_app.state.db = db
             web_app.state.exit_mgr = exit_mgr
+            web_app.state.market_cache = market_cache
             web_config = uvicorn.Config(
                 web_app, host=config.web.host, port=config.web.port, log_level="warning",
             )

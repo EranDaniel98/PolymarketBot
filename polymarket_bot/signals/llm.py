@@ -391,11 +391,15 @@ class LLMSignal(SignalPlugin):
             return ""
         try:
             resp = await self._http.get(
-                f"https://gamma-api.polymarket.com/markets/{market.id}",
+                "https://gamma-api.polymarket.com/markets",
+                params={"condition_id": market.id},
             )
             if resp.status_code != 200:
                 return ""
-            data = resp.json()
+            results = resp.json()
+            if not results:
+                return ""
+            data = results[0] if isinstance(results, list) else results
             parts = []
             desc = data.get("description", "")
             if desc:
@@ -465,6 +469,7 @@ class LLMSignal(SignalPlugin):
         try:
             resp = await self._http.get(
                 "https://en.wikipedia.org/api/rest_v1/page/html/Portal:Current_events",
+                headers={"User-Agent": "PolymarketBot/0.1 (contact@example.com)"},
             )
             if resp.status_code != 200:
                 return ""

@@ -60,8 +60,8 @@ class WhaleSignal(SignalPlugin):
 
         try:
             resp = await self._http.get(
-                f"{CLOB_API}/trades",
-                params={"asset_id": token_id},
+                f"{CLOB_API}/activity/trades",
+                params={"asset_id": token_id, "limit": 100},
             )
             if resp.status_code != 200:
                 return []
