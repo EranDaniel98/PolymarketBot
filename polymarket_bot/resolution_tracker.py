@@ -55,10 +55,15 @@ class ResolutionTracker:
         if not self._http:
             return None
         try:
-            resp = await self._http.get(f"{GAMMA_API}/markets/{market_id}")
+            resp = await self._http.get(
+                f"{GAMMA_API}/markets", params={"condition_id": market_id},
+            )
             if resp.status_code != 200:
                 return None
-            data = resp.json()
+            results = resp.json()
+            if not results:
+                return None
+            data = results[0] if isinstance(results, list) else results
             outcome = data.get("outcome") or data.get("winner")
             if outcome and outcome in ("Yes", "No"):
                 return outcome
