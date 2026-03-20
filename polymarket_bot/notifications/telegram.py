@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import logging
 
 from polymarket_bot.models import TradeDecision
@@ -21,6 +22,7 @@ class TelegramNotifier(Notifier):
         self._bot = None
         self._app = None
         self._pending_approvals: dict[str, asyncio.Future] = {}
+        self._callback_key_map: dict[str, str] = {}  # short_key -> market_id
 
     @property
     def name(self) -> str:
@@ -51,6 +53,16 @@ class TelegramNotifier(Notifier):
         self._bot = None
         self._app = None
 
+    def _short_key(self, market_id: str) -> str:
+        """Generate a short callback key (≤20 chars) for a market ID.
+
+        Telegram limits callback_data to 64 bytes. Polymarket condition IDs
+        can be 66+ chars, so 'approve:<id>' would exceed the limit.
+        """
+        short = hashlib.sha256(market_id.encode()).hexdigest()[:16]
+        self._callback_key_map[short] = market_id
+        return short
+
     async def _on_callback(self, update, context) -> None:
         query = update.callback_query
         if not query or not query.data:
@@ -58,7 +70,8 @@ class TelegramNotifier(Notifier):
         parts = query.data.split(":", 1)
         if len(parts) != 2:
             return
-        action, market_id = parts
+        action, short_key = parts
+        market_id = self._callback_key_map.get(short_key, short_key)
         if action == "approve":
             self.resolve_approval(market_id, True)
             await query.answer("Trade approved!")
@@ -115,12 +128,14 @@ class TelegramNotifier(Notifier):
     async def _send_approval_message(self, decision: TradeDecision) -> None:
         from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
+        short_key = self._short_key(decision.market_id)
         signal_summary = ", ".join(
             f"{s.source}({s.confidence:.0%})" for s in decision.signals[:5]
         )
+        market_label = decision.question or decision.market_id
         text = (
             f"\U0001f4cb <b>Approval Required</b>\n\n"
-            f"Market: <code>{decision.market_id}</code>\n"
+            f"Market: <b>{market_label}</b>\n"
             f"Direction: <b>{decision.direction.value}</b>\n"
             f"Amount: <b>${decision.amount:.2f}</b>\n"
             f"Confidence: <b>{decision.confidence:.0%}</b>\n"
@@ -129,8 +144,8 @@ class TelegramNotifier(Notifier):
         )
         keyboard = InlineKeyboardMarkup([
             [
-                InlineKeyboardButton("Approve", callback_data=f"approve:{decision.market_id}"),
-                InlineKeyboardButton("Reject", callback_data=f"reject:{decision.market_id}"),
+                InlineKeyboardButton("Approve", callback_data=f"approve:{short_key}"),
+                InlineKeyboardButton("Reject", callback_data=f"reject:{short_key}"),
             ]
         ])
         await self._send_message(text, reply_markup=keyboard)
@@ -151,8 +166,9 @@ class TelegramNotifier(Notifier):
         await self._send_approval_message(decision)
         response = await self._wait_for_response(decision.market_id)
         if response is None:
+            market_label = decision.question or decision.market_id
             await self.send_alert(
-                f"Approval expired for {decision.market_id} — trade cancelled.",
+                f"Approval expired for <b>{market_label}</b> — trade cancelled.",
                 NotificationLevel.WARNING,
             )
             return False

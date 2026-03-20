@@ -65,47 +65,8 @@ class PollSignal(SignalPlugin):
         return " ".join(keywords[:5])
 
     async def _fetch_poll_data(self, market: Market) -> dict | None:
-        if not self._client:
-            return None
-        if market.category not in ("politics", "election", "policy"):
-            return None
-
-        keywords = self._extract_search_terms(market.question)
-        if not keywords:
-            return None
-
-        try:
-            # Try RealClearPolitics polling search
-            resp = await self._client.get(
-                "https://www.realclearpolling.com/api/polls/search",
-                params={"q": keywords},
-            )
-            if resp.status_code == 200:
-                data = resp.json()
-                if data and isinstance(data, list) and len(data) > 0:
-                    avg = data[0].get("rcp_average", data[0].get("average", 0))
-                    if avg and avg > 0:
-                        return {
-                            "implied_probability": avg / 100,
-                            "source": "RCP Average",
-                        }
-
-            # Fallback: try 270toWin aggregate
-            resp2 = await self._client.get(
-                "https://www.270towin.com/api/polls",
-                params={"q": keywords},
-            )
-            if resp2.status_code == 200:
-                data2 = resp2.json()
-                if data2 and isinstance(data2, list) and len(data2) > 0:
-                    avg = data2[0].get("average", 0)
-                    if avg and avg > 0:
-                        return {
-                            "implied_probability": avg / 100,
-                            "source": "270toWin",
-                        }
-
-            return None
-        except Exception:
-            logger.debug("Poll data fetch failed for: %s", market.question)
-            return None
+        # No reliable public polling API is available. Return None to avoid
+        # hitting non-existent endpoints. The divergence signal already covers
+        # cross-platform mispricings. Real polling sources can be added here
+        # when they become available.
+        return None

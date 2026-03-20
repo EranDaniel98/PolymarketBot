@@ -43,6 +43,7 @@ async def positions():
         mid = row.get("market_id", "")
         market = cache.get(mid)
         row["question"] = market.question if market else ""
+        row["slug"] = market.slug if market else ""
     return rows
 
 
@@ -55,6 +56,7 @@ async def trades():
         mid = row.get("market_id", "")
         market = cache.get(mid)
         row["question"] = market.question if market else ""
+        row["slug"] = market.slug if market else ""
     return rows
 
 

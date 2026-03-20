@@ -163,6 +163,8 @@ class MarketScanner:
             except (ValueError, TypeError):
                 pass
 
+            slug = event_data.get("slug", market_data.get("slug", ""))
+
             return Market(
                 id=condition_id,
                 question=question,
@@ -173,6 +175,7 @@ class MarketScanner:
                 category=category.lower(),
                 description=description,
                 volume=volume,
+                slug=slug,
             )
         except Exception:
             logger.debug("Failed to parse market: %s", market_data.get("question", "unknown"))

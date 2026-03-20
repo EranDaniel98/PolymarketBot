@@ -174,6 +174,7 @@ class DecisionEngine:
             signals=recent_signals,
             order_type=OrderType.LIMIT,
             tokens=market.tokens,
+            question=market.question,
         )
 
         approved, reason = await self._risk.check(decision, market.current_price)

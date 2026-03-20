@@ -11,7 +11,7 @@ from polymarket_bot.signals.base import SignalPlugin
 
 logger = logging.getLogger(__name__)
 
-CLOB_API = "https://clob.polymarket.com"
+CLOB_API = "https://data-api.polymarket.com"
 
 
 class WhaleSignal(SignalPlugin):
@@ -60,7 +60,7 @@ class WhaleSignal(SignalPlugin):
 
         try:
             resp = await self._http.get(
-                f"{CLOB_API}/activity/trades",
+                f"{CLOB_API}/trades",
                 params={"asset_id": token_id, "limit": 100},
             )
             if resp.status_code != 200:
@@ -115,7 +115,7 @@ class WhaleSignal(SignalPlugin):
             price = float(t.get("price", 0))
             usd_value = size * price if price > 0 else size
             side = t.get("side", "").upper()
-            maker = (t.get("maker", "") or t.get("maker_address", "")).lower()
+            maker = (t.get("proxyWallet", "") or t.get("maker", "") or t.get("maker_address", "")).lower()
 
             # Check tracked wallets — halve threshold
             is_tracked = maker in self._tracked_wallets if maker else False
@@ -142,13 +142,13 @@ class WhaleSignal(SignalPlugin):
                 maker_buys = sum(
                     float(t.get("size", t.get("amount", 0))) * float(t.get("price", 0))
                     for t in recent
-                    if (t.get("maker", "") or t.get("maker_address", "")).lower() == maker
+                    if (t.get("proxyWallet", "") or t.get("maker", "") or t.get("maker_address", "")).lower() == maker
                     and t.get("side", "").upper() == "BUY"
                 )
                 maker_sells = sum(
                     float(t.get("size", t.get("amount", 0))) * float(t.get("price", 0))
                     for t in recent
-                    if (t.get("maker", "") or t.get("maker_address", "")).lower() == maker
+                    if (t.get("proxyWallet", "") or t.get("maker", "") or t.get("maker_address", "")).lower() == maker
                     and t.get("side", "").upper() != "BUY"
                 )
                 whale_buys_usd += maker_buys

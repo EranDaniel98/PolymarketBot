@@ -49,6 +49,7 @@ class Market:
     description: str = ""
     volume: float = 0.0
     correlation_tags: list[str] = field(default_factory=list)
+    slug: str = ""
     platform_mappings: dict[str, str] = field(default_factory=dict)
 
 
@@ -78,6 +79,7 @@ class TradeDecision:
     signals: list[Signal]
     order_type: OrderType
     tokens: dict[str, str] = field(default_factory=dict)
+    question: str = ""
     is_exit: bool = False
     arb_opportunity: ArbitrageOpportunity | None = None
 

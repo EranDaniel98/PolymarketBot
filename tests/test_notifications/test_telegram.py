@@ -77,3 +77,15 @@ async def test_resolve_approval(notifier):
     notifier._pending_approvals["m1"] = future
     notifier.resolve_approval("m1", True)
     assert future.result() is True
+
+
+def test_short_key_fits_callback_data_limit():
+    """Telegram limits callback_data to 64 bytes. Verify short keys stay within."""
+    notifier = TelegramNotifier(bot_token="t", chat_id="c")
+    long_id = "0x" + "a" * 64  # typical Polymarket condition ID (66 chars)
+    short = notifier._short_key(long_id)
+    approve_data = f"approve:{short}"
+    reject_data = f"reject:{short}"
+    assert len(approve_data.encode()) <= 64
+    assert len(reject_data.encode()) <= 64
+    assert notifier._callback_key_map[short] == long_id
