@@ -23,6 +23,8 @@ class TelegramNotifier(Notifier):
         self._app = None
         self._pending_approvals: dict[str, asyncio.Future] = {}
         self._callback_key_map: dict[str, str] = {}  # short_key -> market_id
+        self._pending_decisions: dict[str, TradeDecision] = {}  # market_id -> decision
+        self.auto_decide_callback = None  # async fn(TradeDecision) -> bool
 
     @property
     def name(self) -> str:
@@ -80,6 +82,27 @@ class TelegramNotifier(Notifier):
             self.resolve_approval(market_id, False)
             await query.answer("Trade rejected.")
             await query.edit_message_reply_markup(reply_markup=None)
+        elif action == "decide":
+            await query.answer("Analyzing... please wait")
+            decision = self._pending_decisions.get(market_id)
+            if decision and self.auto_decide_callback:
+                try:
+                    approved = await self.auto_decide_callback(decision)
+                    verdict = "APPROVED" if approved else "REJECTED"
+                    await query.edit_message_reply_markup(reply_markup=None)
+                    await self._send_message(
+                        f"\U0001f916 <b>AI Decision: {verdict}</b>\n"
+                        f"Market: <b>{decision.question or market_id}</b>"
+                    )
+                    self.resolve_approval(market_id, approved)
+                except Exception:
+                    logger.exception("Auto-decide failed for %s", market_id)
+                    await self._send_message(
+                        f"\u26a0\ufe0f Auto-decide failed for <b>{decision.question or market_id}</b>. "
+                        f"Please approve or reject manually."
+                    )
+            else:
+                await self._send_message("\u26a0\ufe0f Auto-decide not available.")
 
     async def _send_message(self, text: str, parse_mode: str = "HTML",
                             reply_markup=None) -> None:
@@ -101,11 +124,13 @@ class TelegramNotifier(Notifier):
 
     async def send_trade_notification(
         self, market_id: str, direction: str, amount: float, price: float,
+        question: str = "",
     ) -> None:
         arrow = "\u2b06\ufe0f" if direction == "YES" else "\u2b07\ufe0f"
+        market_label = question or market_id
         text = (
             f"{arrow} <b>Trade Executed</b>\n\n"
-            f"Market: <code>{market_id}</code>\n"
+            f"Market: <b>{market_label}</b>\n"
             f"Direction: <b>{direction}</b>\n"
             f"Amount: <b>${amount:.2f}</b>\n"
             f"Price: <b>${price:.4f}</b>"
@@ -142,12 +167,16 @@ class TelegramNotifier(Notifier):
             f"Signals: {signal_summary or 'N/A'}\n\n"
             f"Auto-cancels in {self._approval_timeout}s."
         )
-        keyboard = InlineKeyboardMarkup([
-            [
-                InlineKeyboardButton("Approve", callback_data=f"approve:{short_key}"),
-                InlineKeyboardButton("Reject", callback_data=f"reject:{short_key}"),
-            ]
-        ])
+        buttons = [
+            InlineKeyboardButton("\u2705 Approve", callback_data=f"approve:{short_key}"),
+            InlineKeyboardButton("\u274c Reject", callback_data=f"reject:{short_key}"),
+        ]
+        if self.auto_decide_callback:
+            buttons.append(
+                InlineKeyboardButton("\U0001f916 Decide for me", callback_data=f"decide:{short_key}"),
+            )
+        keyboard = InlineKeyboardMarkup([buttons])
+        self._pending_decisions[decision.market_id] = decision
         await self._send_message(text, reply_markup=keyboard)
 
     async def _wait_for_response(self, market_id: str) -> bool | None:
@@ -175,6 +204,7 @@ class TelegramNotifier(Notifier):
         return response
 
     def resolve_approval(self, market_id: str, approved: bool) -> None:
+        self._pending_decisions.pop(market_id, None)
         future = self._pending_approvals.get(market_id)
         if future and not future.done():
             future.set_result(approved)

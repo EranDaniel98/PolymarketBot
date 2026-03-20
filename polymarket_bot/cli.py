@@ -69,12 +69,14 @@ def format_arb(spread: float) -> str:
     return f"[{COLOR_SCHEME['arb']}]{spread:.1%} spread[/]"
 
 
-def print_trade_execution(market_id: str, direction: str, amount: float, price: float) -> None:
+def print_trade_execution(market_id: str, direction: str, amount: float, price: float,
+                          question: str = "") -> None:
     color = COLOR_SCHEME["profit"] if direction == "YES" else COLOR_SCHEME["loss"]
+    market_label = question or market_id
     console.print(
         Panel(
             f"[{color}]{direction}[/] {format_price(price)} x ${amount:.2f}\n"
-            f"[{COLOR_SCHEME['muted']}]Market: {market_id}[/]",
+            f"[{COLOR_SCHEME['muted']}]{market_label}[/]",
             title="[bold]Trade Executed[/]",
             border_style="green",
         )

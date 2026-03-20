@@ -210,7 +210,8 @@ async def run_bot(config_path: str = "config.yaml"):
             logger.warning("No live price for %s — skipping execution", decision.market_id)
             return
         print_trade_execution(decision.market_id, decision.direction.value,
-                             decision.amount, current_price)
+                             decision.amount, current_price,
+                             question=decision.question)
         await exec_engine.execute(decision, current_price=current_price)
 
     async def on_approval_request(decision: TradeDecision):
@@ -228,10 +229,12 @@ async def run_bot(config_path: str = "config.yaml"):
 
     async def on_trade_execution(execution: TradeExecution):
         nonlocal bankroll
-        print_trade_execution(execution.market_id, execution.direction.value,
-                             execution.amount, execution.price)
-        # Track new entries for exit management
         cached_market = market_cache.get(execution.market_id)
+        exec_question = cached_market.question if cached_market else ""
+        print_trade_execution(execution.market_id, execution.direction.value,
+                             execution.amount, execution.price,
+                             question=exec_question)
+        # Track new entries for exit management
         tokens = cached_market.tokens if cached_market else {}
         end_date = cached_market.end_date if cached_market else None
         await exit_mgr.track_entry(
@@ -250,10 +253,13 @@ async def run_bot(config_path: str = "config.yaml"):
             decision_engine._weights = calibrator.weights
             console.print("[cyan]Signal weights recalibrated:[/] " +
                          ", ".join(f"{k}={v:.0%}" for k, v in calibrator.weights.items()))
+        cached = market_cache.get(execution.market_id)
+        question = cached.question if cached else ""
         for notifier in notifiers:
             await notifier.send_trade_notification(
                 execution.market_id, execution.direction.value,
                 execution.amount, execution.price,
+                question=question,
             )
 
     bus.subscribe("trade_decision", on_trade_decision)
@@ -265,6 +271,22 @@ async def run_bot(config_path: str = "config.yaml"):
     for plugin in plugins:
         await plugin.start()
         console.print(f"[bold green]Signal plugin started:[/] [cyan]{plugin.name}[/]")
+
+    # Wire "Decide for me" callback for Telegram
+    llm_plugin = next((p for p in plugins if p.name == "llm"), None)
+    if llm_plugin:
+        async def auto_decide(decision: TradeDecision) -> bool:
+            market = market_cache.get(decision.market_id)
+            if not market:
+                return False
+            signal = await llm_plugin.evaluate(market)
+            if signal is None:
+                return False
+            return signal.direction == decision.direction and signal.confidence >= 0.4
+
+        for notifier in notifiers:
+            if hasattr(notifier, "auto_decide_callback"):
+                notifier.auto_decide_callback = auto_decide
 
     # Start arbitrage monitor and exit manager
     await monitor.start()
@@ -407,8 +429,10 @@ async def run_bot(config_path: str = "config.yaml"):
                         pnl_val = (pos.entry_price - cp) * pos.amount / pos.entry_price
                     else:
                         pnl_val = 0
+                    cached = market_cache.get(mid)
+                    label = cached.question if cached else mid
                     positions_data.append({
-                        "market_id": mid, "direction": pos.direction.value,
+                        "market_id": label, "direction": pos.direction.value,
                         "amount": pos.amount, "entry_price": pos.entry_price,
                         "current_price": cp or pos.entry_price, "pnl": pnl_val,
                     })

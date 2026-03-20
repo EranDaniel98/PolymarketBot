@@ -27,6 +27,7 @@ class Notifier(ABC):
     @abstractmethod
     async def send_trade_notification(
         self, market_id: str, direction: str, amount: float, price: float,
+        question: str = "",
     ) -> None: ...
 
     @abstractmethod

@@ -40,12 +40,14 @@ class DiscordNotifier(Notifier):
 
     async def send_trade_notification(
         self, market_id: str, direction: str, amount: float, price: float,
+        question: str = "",
     ) -> None:
+        market_label = question or market_id
         embed = {
             "title": "Trade Executed",
             "color": 3066993 if direction == "YES" else 15158332,
             "fields": [
-                {"name": "Market", "value": market_id, "inline": True},
+                {"name": "Market", "value": market_label, "inline": True},
                 {"name": "Direction", "value": direction, "inline": True},
                 {"name": "Amount", "value": f"${amount:.2f}", "inline": True},
                 {"name": "Price", "value": f"${price:.4f}", "inline": True},
