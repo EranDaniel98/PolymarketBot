@@ -222,6 +222,7 @@ async def run_bot(config_path: str = "config.yaml"):
     exit_mgr = ExitManager(event_bus=bus, database=db, rules=exit_rules, check_interval=30)
     risk_manager._exit_manager = exit_mgr
     decision_engine.set_exit_manager(exit_mgr)
+    decision_engine.set_market_cache(market_cache)
     exit_mgr.set_price_getter(monitor.get_cached_price)
 
     # Load persisted positions from DB

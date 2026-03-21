@@ -20,6 +20,9 @@ def mock_risk():
     risk.check.return_value = (True, "Approved")
     risk.calculate_position_size.return_value = 100.0
     risk.circuit_breaker_active = False
+    risk._bankroll = 5000.0
+    risk._config = MagicMock()
+    risk._config.max_exposure_pct = 0.50
     return risk
 
 
@@ -33,6 +36,7 @@ def mock_bus():
 def mock_db():
     db = AsyncMock()
     db.get_signals.return_value = []
+    db.get_total_exposure.return_value = 0.0
     db.save_signal_outcome = AsyncMock()
     return db
 
@@ -174,3 +178,55 @@ def test_infer_category_weather():
 
 def test_infer_category_general():
     assert _infer_category("Will AI pass the Turing test?") == "general"
+
+
+@pytest.mark.asyncio
+async def test_exposure_maxed_skips_signal(engine, market, mock_db):
+    """When exposure is at the limit, signals should be short-circuited."""
+    mock_db.get_total_exposure.return_value = 2500.0  # == bankroll * 0.50
+    signal = Signal(
+        source="llm", market_id="m1", direction=Direction.YES,
+        confidence=0.95, reasoning="", timestamp=datetime.now(timezone.utc),
+    )
+    event = SignalEvent(signal=signal, market=market)
+    await engine.on_signal(event)
+
+    # Should NOT have saved signal or published anything
+    engine._bus.publish.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_single_source_blocked_even_with_auto_approve(mock_bus, mock_db):
+    """auto_approve_all should NOT bypass min_signal_sources gate."""
+    thresholds = ConfidenceThresholds(
+        auto_execute=0.8, notify=0.5, auto_approve_all=True,
+    )
+    mock_risk = AsyncMock()
+    mock_risk.check.return_value = (True, "Approved")
+    mock_risk.calculate_position_size.return_value = 100.0
+    mock_risk.circuit_breaker_active = False
+    mock_risk._bankroll = 5000.0
+    mock_risk._config = MagicMock()
+    mock_risk._config.max_exposure_pct = 0.50
+
+    eng = DecisionEngine(
+        risk_manager=mock_risk, event_bus=mock_bus, database=mock_db,
+        thresholds=thresholds, signals_config=SignalsConfig(),
+    )
+
+    market = Market(
+        id="m1", question="Test?", end_date=datetime(2026, 12, 31, tzinfo=timezone.utc),
+        tokens={"YES": "0xa", "NO": "0xb"}, current_price=0.40,
+    )
+    signal = Signal(
+        source="llm", market_id="m1", direction=Direction.YES,
+        confidence=0.70, reasoning="", timestamp=datetime.now(timezone.utc),
+    )
+    event = SignalEvent(signal=signal, market=market)
+    await eng.on_signal(event)
+
+    # Single source with auto_approve: should downgrade to notify, not auto_execute
+    calls = mock_bus.publish.call_args_list
+    if calls:
+        topics = [c[0][0] for c in calls]
+        assert "trade_decision" not in topics

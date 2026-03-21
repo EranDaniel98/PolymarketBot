@@ -149,6 +149,16 @@ class DecisionEngine:
         """Set exit manager reference for open position checks."""
         self._exit_manager = exit_manager
 
+    def set_market_cache(self, cache: dict) -> None:
+        """Set shared market cache for question/category lookups."""
+        self._market_cache = cache
+
+    async def _exposure_maxed(self) -> bool:
+        """Check if total exposure is at or above the limit."""
+        exposure = await self._db.get_total_exposure()
+        max_exposure = self._risk._bankroll * self._risk._config.max_exposure_pct
+        return exposure >= max_exposure
+
     async def on_signal(self, signal_event: SignalEvent) -> None:
         if self._risk.circuit_breaker_active:
             logger.warning("Circuit breaker active — ignoring signal")
@@ -159,6 +169,11 @@ class DecisionEngine:
             if signal_event.market.id in self._exit_manager._positions:
                 logger.debug("Already holding position in %s — skipping", signal_event.market.id)
                 return
+
+        # Short-circuit when exposure is maxed — avoid wasting LLM/API calls
+        if await self._exposure_maxed():
+            logger.debug("Exposure maxed — skipping signal for %s", signal_event.market.id)
+            return
 
         signal = signal_event.signal
         market = signal_event.market
@@ -196,7 +211,13 @@ class DecisionEngine:
         composite = self.aggregate_signals(recent_signals)
         action = self.determine_action(composite)
 
+        # Auto-approve mode: skip Telegram approval, execute all notify-level trades
+        if action == "notify" and self._thresholds.auto_approve_all:
+            logger.info("Auto-approve mode: promoting notify->auto_execute for %s", market.id)
+            action = "auto_execute"
+
         # Multi-signal gate: require 2+ distinct sources for auto_execute
+        # Applied AFTER auto-approve to prevent single-source trades from executing
         distinct_sources = {s.source for s in recent_signals}
         if action == "auto_execute" and len(distinct_sources) < self._thresholds.min_signal_sources:
             logger.warning(
@@ -204,11 +225,6 @@ class DecisionEngine:
                 market.id, len(distinct_sources), ", ".join(distinct_sources),
             )
             action = "notify"
-
-        # Auto-approve mode: skip Telegram approval, execute all notify-level trades
-        if action == "notify" and self._thresholds.auto_approve_all:
-            logger.info("Auto-approve mode: promoting notify->auto_execute for %s", market.id)
-            action = "auto_execute"
 
         # Structured log for log_only decisions (missed opportunities)
         import logging as _logging
@@ -304,6 +320,9 @@ class DecisionEngine:
         if self._risk.circuit_breaker_active:
             return
 
+        if await self._exposure_maxed():
+            return
+
         polymarket_id = arb.market_ids.get("polymarket")
         if not polymarket_id:
             return
@@ -316,6 +335,11 @@ class DecisionEngine:
         direction = Direction.YES if avg_other > polymarket_price else Direction.NO
         size = await self._risk.calculate_position_size(arb.confidence, polymarket_price)
 
+        # Look up market for category inference
+        cached = self._market_cache.get(polymarket_id) if hasattr(self, '_market_cache') else None
+        question = cached.question if cached else ""
+        category = (cached.category if cached else "") or _infer_category(question)
+
         decision = TradeDecision(
             market_id=polymarket_id,
             direction=direction,
@@ -324,6 +348,8 @@ class DecisionEngine:
             signals=[],
             order_type=OrderType.MARKET if arb.time_sensitivity == "high" else OrderType.LIMIT,
             arb_opportunity=arb,
+            question=question,
+            category=category,
         )
 
         approved, reason = await self._risk.check(decision, polymarket_price)
