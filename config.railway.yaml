@@ -120,7 +120,7 @@ logging:
 
 confidence_thresholds:
   auto_execute: 0.85
-  notify: 0.55
+  notify: 0.50
   auto_approve_all: true
 
 web:

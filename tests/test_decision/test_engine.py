@@ -201,7 +201,7 @@ async def test_exposure_maxed_skips_signal_no_positions(engine, market, mock_db)
 
 @pytest.mark.asyncio
 async def test_single_source_blocked_even_with_auto_approve(mock_bus, mock_db):
-    """auto_approve_all should NOT bypass min_signal_sources gate."""
+    """auto_approve_all + single source → log_only (no publish at all), not notify."""
     thresholds = ConfidenceThresholds(
         auto_execute=0.8, notify=0.5, auto_approve_all=True,
     )
@@ -230,11 +230,13 @@ async def test_single_source_blocked_even_with_auto_approve(mock_bus, mock_db):
     event = SignalEvent(signal=signal, market=market)
     await eng.on_signal(event)
 
-    # Single source with auto_approve: should downgrade to notify, not auto_execute
+    # Single source with auto_approve: should downgrade to log_only, not notify
+    # No trade_decision AND no approval_request should be published
     calls = mock_bus.publish.call_args_list
     if calls:
         topics = [c[0][0] for c in calls]
         assert "trade_decision" not in topics
+        assert "approval_request" not in topics
 
 
 @pytest.mark.asyncio
@@ -438,9 +440,9 @@ async def test_on_signal_batch_saves_all_signals(engine, market, mock_db):
 
 @pytest.mark.asyncio
 async def test_on_signal_batch_single_source_still_downgrades(engine, market, mock_db, mock_bus):
-    """A batch with only one source must be downgraded from auto_execute to notify."""
+    """A batch with only one source must be downgraded — to log_only when no human watching."""
     # Use a single very high-confidence signal — composite will pass auto_execute threshold
-    # but min_signal_sources gate must downgrade it to notify
+    # but min_signal_sources gate must downgrade it (log_only since engine fixture has no auto_approve)
     signals = (
         Signal(source="llm", market_id="m1", direction=Direction.YES,
                confidence=0.95, reasoning="very confident", timestamp=datetime.now(timezone.utc)),

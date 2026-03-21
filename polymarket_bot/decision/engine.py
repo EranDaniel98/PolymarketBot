@@ -290,11 +290,19 @@ class DecisionEngine:
         # Applied AFTER auto-approve to prevent single-source trades from executing
         distinct_sources = {s.source for s in recent_signals}
         if action == "auto_execute" and len(distinct_sources) < self._thresholds.min_signal_sources:
-            logger.warning(
-                "Downgraded auto_execute->notify for %s: only %d source(s) (%s)",
-                market.id, len(distinct_sources), ", ".join(distinct_sources),
-            )
-            action = "notify"
+            if self._thresholds.auto_approve_all:
+                # No human watching Telegram — skip entirely instead of timing out
+                logger.info(
+                    "Downgraded auto_execute->log_only for %s (auto_approve + single source)",
+                    market.id,
+                )
+                action = "log_only"
+            else:
+                logger.warning(
+                    "Downgraded auto_execute->notify for %s: only %d source(s) (%s)",
+                    market.id, len(distinct_sources), ", ".join(distinct_sources),
+                )
+                action = "notify"
 
         # Structured log for log_only decisions (missed opportunities)
         import logging as _logging
