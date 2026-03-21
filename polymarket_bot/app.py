@@ -244,6 +244,7 @@ async def run_bot(config_path: str = "config.yaml"):
 
     # Wire event handlers
     bus.subscribe("signal", decision_engine.on_signal)
+    bus.subscribe("signal_batch", decision_engine.on_signal_batch)
     bus.subscribe("arb_opportunity", decision_engine.on_arb_opportunity)
 
     async def on_trade_decision(decision: TradeDecision):
