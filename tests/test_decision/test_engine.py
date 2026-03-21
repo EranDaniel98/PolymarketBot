@@ -1,7 +1,7 @@
 import pytest
 from unittest.mock import AsyncMock, MagicMock
-from datetime import datetime, timezone
-from polymarket_bot.decision.engine import DecisionEngine
+from datetime import datetime, timedelta, timezone
+from polymarket_bot.decision.engine import DecisionEngine, _infer_category
 from polymarket_bot.config import ConfidenceThresholds, SignalsConfig
 from polymarket_bot.models import Signal, Direction, Market, SignalEvent, OrderType
 
@@ -107,3 +107,70 @@ async def test_single_source_downgrades_to_notify(engine, market, mock_db):
         assert "trade_decision" not in topics or any(
             c[0][0] == "approval_request" for c in calls
         )
+
+
+def test_correlation_discount_correlated_sources(engine):
+    """Correlated sources (news+llm+social) should get discounted."""
+    signals = [
+        Signal(source="news", market_id="m1", direction=Direction.YES,
+               confidence=0.8, reasoning="", timestamp=datetime.now(timezone.utc)),
+        Signal(source="llm", market_id="m1", direction=Direction.YES,
+               confidence=0.8, reasoning="", timestamp=datetime.now(timezone.utc)),
+        Signal(source="social", market_id="m1", direction=Direction.YES,
+               confidence=0.8, reasoning="", timestamp=datetime.now(timezone.utc)),
+    ]
+    composite_corr = engine.aggregate_signals(signals)
+
+    # Independent sources should NOT be discounted
+    signals_indep = [
+        Signal(source="polls", market_id="m1", direction=Direction.YES,
+               confidence=0.8, reasoning="", timestamp=datetime.now(timezone.utc)),
+        Signal(source="favorite_longshot", market_id="m1", direction=Direction.YES,
+               confidence=0.8, reasoning="", timestamp=datetime.now(timezone.utc)),
+        Signal(source="weather", market_id="m1", direction=Direction.YES,
+               confidence=0.8, reasoning="", timestamp=datetime.now(timezone.utc)),
+    ]
+    composite_indep = engine.aggregate_signals(signals_indep)
+
+    # Correlated group should produce lower composite than independent group
+    assert composite_corr < composite_indep
+
+
+def test_freshness_decay_structural_vs_news(engine):
+    """Structural signals (FLB) should decay much slower than news."""
+    two_hours_ago = datetime.now(timezone.utc) - timedelta(hours=2)
+
+    flb_signal = Signal(source="favorite_longshot", market_id="m1",
+                        direction=Direction.YES, confidence=0.8,
+                        reasoning="", timestamp=two_hours_ago)
+    news_signal = Signal(source="news", market_id="m1",
+                         direction=Direction.YES, confidence=0.8,
+                         reasoning="", timestamp=two_hours_ago)
+
+    flb_freshness = engine._freshness_factor(flb_signal)
+    news_freshness = engine._freshness_factor(news_signal)
+
+    # FLB (24h half-life) should retain much more weight than news (1h half-life)
+    assert flb_freshness > 0.85  # 2h / 1440 half-life ≈ 0.92
+    assert news_freshness < 0.20  # 2h / 60 half-life ≈ 0.14
+    assert flb_freshness > news_freshness
+
+
+def test_infer_category_politics():
+    assert _infer_category("Will the president win the election?") == "politics"
+
+
+def test_infer_category_crypto():
+    assert _infer_category("Will Bitcoin reach $100k?") == "crypto"
+
+
+def test_infer_category_sports():
+    assert _infer_category("Will the NBA finals go to game 7?") == "sports"
+
+
+def test_infer_category_weather():
+    assert _infer_category("Will a hurricane hit Florida?") == "weather"
+
+
+def test_infer_category_general():
+    assert _infer_category("Will AI pass the Turing test?") == "general"

@@ -16,12 +16,9 @@ def half_kelly(p: float, market_price: float, fraction: float = 0.5) -> float:
     """Kelly criterion for binary outcome markets, with fee adjustment."""
     if market_price <= 0 or market_price >= 1 or p <= 0 or p >= 1:
         return 0.0
-    b = (1 - market_price) / market_price  # payout odds
-    # Adjust probability downward for fees
-    p_adj = p - ROUND_TRIP_FEE / 2
-    if p_adj <= 0:
-        return 0.0
-    full_kelly = (p_adj * b - (1 - p_adj)) / b
+    # Adjust payout odds for round-trip fees, not probability
+    b = (1 - market_price) / market_price * (1 - ROUND_TRIP_FEE)
+    full_kelly = (p * b - (1 - p)) / b
     if full_kelly <= 0:
         return 0.0
     return fraction * full_kelly
@@ -79,10 +76,10 @@ class RiskManager:
                 if confidence <= tier.max_confidence:
                     return tier.fraction
             return self._config.kelly_fraction
-        # Default tiers when none configured
-        if confidence < 0.60:
+        # Tiers calibrated for post-discount composite confidence
+        if confidence < 0.52:
             return 0.25
-        elif confidence <= 0.75:
+        elif confidence <= 0.62:
             return 0.35
         else:
             return self._config.kelly_fraction

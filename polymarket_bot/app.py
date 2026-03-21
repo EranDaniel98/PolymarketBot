@@ -231,6 +231,16 @@ async def run_bot(config_path: str = "config.yaml"):
             f"[bold green]Loaded {len(exit_mgr._positions)} open positions from DB[/]"
         )
 
+    # Recover positions from trades that weren't tracked (crash recovery)
+    untracked = await db.get_untracked_trades()
+    for row in untracked:
+        await exit_mgr.track_entry(
+            row["market_id"], Direction(row["direction"]),
+            row["price"], row["amount"],
+        )
+    if untracked:
+        console.print(f"[bold yellow]Recovered {len(untracked)} untracked positions from crash[/]")
+
     # Wire event handlers
     bus.subscribe("signal", decision_engine.on_signal)
     bus.subscribe("arb_opportunity", decision_engine.on_arb_opportunity)

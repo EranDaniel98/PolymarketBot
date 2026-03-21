@@ -18,6 +18,20 @@ def _clamp(x: float, lo: float = 0.01, hi: float = 0.99) -> float:
     return max(lo, min(hi, x))
 
 
+def _infer_category(question: str) -> str:
+    """Infer category from question text when Gamma API doesn't provide one."""
+    q = question.lower()
+    if any(w in q for w in ("election", "president", "congress", "vote", "poll")):
+        return "politics"
+    if any(w in q for w in ("bitcoin", "ethereum", "crypto", "btc", "eth")):
+        return "crypto"
+    if any(w in q for w in ("nba", "nfl", "mlb", "game", "match", "score")):
+        return "sports"
+    if any(w in q for w in ("temperature", "weather", "hurricane", "storm")):
+        return "weather"
+    return "general"
+
+
 class DecisionEngine:
     def __init__(
         self,
@@ -43,10 +57,23 @@ class DecisionEngine:
             "whale": signals_config.whale.weight,
         }
 
+    # Signal half-lives in minutes
+    SIGNAL_HALF_LIVES = {
+        "favorite_longshot": 1440,  # 24 hours — price structure changes slowly
+        "divergence": 1440,         # 24 hours — platform gaps persist
+        "weather": 720,             # 12 hours — forecasts update twice daily
+        "polls": 720,               # 12 hours
+        "llm": 360,                 # 6 hours
+        "bookmaker": 180,           # 3 hours — odds move faster
+        "whale": 60,                # 1 hour — whale impact fades quickly
+        "news": 60,                 # 1 hour — news cycles fast
+    }
+
     def _freshness_factor(self, signal: Signal) -> float:
-        """Exponential decay based on signal age (half-life = 2 hours)."""
+        """Exponential decay based on signal age with per-source half-life."""
         age_minutes = (datetime.now(timezone.utc) - signal.timestamp).total_seconds() / 60
-        return math.exp(-age_minutes / 120)
+        half_life = self.SIGNAL_HALF_LIVES.get(signal.source, 120)
+        return math.exp(-age_minutes / half_life)
 
     def aggregate_signals(self, signals: list[Signal]) -> float:
         """Aggregate signals using log-odds for proper probability combination.
@@ -78,14 +105,23 @@ class DecisionEngine:
         net_log_odds = abs(yes_log_odds - no_log_odds)
         composite = 1.0 / (1.0 + math.exp(-net_log_odds))
 
-        # Consensus discount: only when 3+ signals agree AND total sources > 3
-        # (correlated signals shouldn't stack confidence linearly)
+        # Correlation-aware consensus: only discount if agreeing sources share data
+        CORRELATED_PAIRS = {
+            frozenset({"news", "social"}),
+            frozenset({"news", "llm"}),    # LLM reads news headlines
+            frozenset({"social", "llm"}),  # LLM reads Reddit
+        }
         majority_dir = Direction.YES if yes_log_odds >= no_log_odds else Direction.NO
-        agreeing_count = sum(1 for s in signals if s.direction == majority_dir)
-        total_sources = len({s.source for s in signals})
-        if agreeing_count >= 3 and total_sources <= agreeing_count:
-            composite *= 0.90
-            logger.info("Consensus discount: %d/%d sources agree", agreeing_count, total_sources)
+        agreeing_sources = {s.source for s in signals if s.direction == majority_dir}
+        correlated_count = sum(
+            1 for pair in CORRELATED_PAIRS
+            if pair.issubset(agreeing_sources)
+        )
+        if correlated_count > 0:
+            discount = 0.95 ** correlated_count  # 5% per correlated pair
+            composite *= discount
+            logger.info("Correlation discount: %.0f%% (%d correlated pairs in %s)",
+                       discount * 100, correlated_count, agreeing_sources)
 
         return composite
 
@@ -234,7 +270,7 @@ class DecisionEngine:
             order_type=OrderType.LIMIT,
             tokens=market.tokens,
             question=market.question,
-            category=market.category or "",
+            category=market.category or _infer_category(market.question),
         )
 
         approved, reason = await self._risk.check(decision, market.current_price)

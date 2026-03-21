@@ -438,6 +438,17 @@ class Database:
             "fee_pct_of_volume": row["total_fees"] / total_vol if total_vol > 0 else 0,
         }
 
+    async def get_untracked_trades(self) -> list[dict]:
+        """Find filled BUY trades with no matching portfolio entry."""
+        return await self._fetch_all(
+            "SELECT t.market_id, t.direction, t.amount, t.price, t.timestamp "
+            "FROM trades t "
+            "LEFT JOIN portfolio p ON t.market_id = p.market_id "
+            "WHERE t.status = 'filled' AND p.market_id IS NULL "
+            "AND t.order_id NOT LIKE '%_exit_%' "
+            "ORDER BY t.timestamp DESC"
+        )
+
     async def get_unresolved_market_ids(self) -> list[str]:
         rows = await self._fetch_all(
             "SELECT DISTINCT so.market_id FROM signal_outcomes so "

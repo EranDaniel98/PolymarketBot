@@ -83,25 +83,27 @@ async def test_check_risk_rejects_max_exposure(risk_manager, mock_db):
 
 
 async def test_half_kelly_formula():
-    # With fee adjustment, p_adj = 0.7 - 0.01 = 0.69
-    # b = (1-1/3)/(1/3) = 2.0, full = (0.69*2 - 0.31)/2 = 0.535, half = 0.2675
+    # Fee-adjusted odds: b = (1-1/3)/(1/3) * (1-0.02) = 2.0 * 0.98 = 1.96
+    # full = (0.7*1.96 - 0.3)/1.96 = (1.372-0.3)/1.96 = 0.547, half = 0.274
     result = half_kelly(p=0.7, market_price=1/3, fraction=0.5)
     assert 0.20 < result < 0.30
 
 
 async def test_tiered_kelly_low_confidence(risk_manager, mock_db):
-    """Low confidence should use quarter-Kelly (0.25)."""
+    """Low confidence (post-discount) should use quarter-Kelly (0.25)."""
     mock_db.get_trade_count.return_value = 51
     rm = risk_manager
-    assert rm._kelly_fraction_for_confidence(0.50) == 0.25
+    assert rm._kelly_fraction_for_confidence(0.45) == 0.25
 
 
 async def test_tiered_kelly_medium_confidence(risk_manager):
-    assert risk_manager._kelly_fraction_for_confidence(0.70) == 0.35
+    """Mid-range post-discount confidence should use 0.35 Kelly."""
+    assert risk_manager._kelly_fraction_for_confidence(0.57) == 0.35
 
 
 async def test_tiered_kelly_high_confidence(risk_manager):
-    assert risk_manager._kelly_fraction_for_confidence(0.85) == 0.5
+    """High post-discount confidence should use full configured Kelly."""
+    assert risk_manager._kelly_fraction_for_confidence(0.70) == 0.5
 
 
 async def test_circuit_breaker_reset(risk_manager, mock_db):
