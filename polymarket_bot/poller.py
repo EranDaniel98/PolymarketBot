@@ -6,7 +6,7 @@ import logging
 from polymarket_bot.cli import console, print_signal
 from polymarket_bot.event_bus import EventBus
 from polymarket_bot.market_filter import MarketFilter
-from polymarket_bot.models import Market, SignalEvent
+from polymarket_bot.models import Market, SignalBatchEvent, SignalEvent
 from polymarket_bot.scanner import MarketScanner
 from polymarket_bot.signals.base import SignalPlugin
 
@@ -88,14 +88,45 @@ class SignalPoller:
                 plugin.name, market.id[:16],
             )
 
+    async def _evaluate_cycle(self) -> None:
+        """Collect all signals from one cycle, group by market, publish signal_batch events."""
+        semaphore = asyncio.Semaphore(10)
+        # signals_by_market: market_id -> (market, [signals])
+        signals_by_market: dict[str, tuple[Market, list]] = {}
+
+        async def _eval_one(market: Market, plugin: "SignalPlugin") -> None:
+            if not plugin.can_evaluate(market):
+                return
+            try:
+                signal = await plugin.evaluate(market)
+                if signal and signal.confidence >= 0.1:
+                    if market.id not in signals_by_market:
+                        signals_by_market[market.id] = (market, [])
+                    signals_by_market[market.id][1].append(signal)
+            except Exception:
+                logger.debug(
+                    "Plugin %s failed on market %s",
+                    plugin.name, market.id[:16],
+                )
+
+        async def _eval_with_sem(market, plugin):
+            async with semaphore:
+                await _eval_one(market, plugin)
+
+        tasks = [
+            _eval_with_sem(m, p)
+            for m in self._markets
+            for p in self._plugins
+            if p.can_evaluate(m)
+        ]
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+        for market, signals in signals_by_market.values():
+            event = SignalBatchEvent(signals=tuple(signals), market=market)
+            await self._bus.publish("signal_batch", event)
+
     async def _evaluate_loop(self) -> None:
         """Periodically run all signal plugins against all markets (parallel with semaphore)."""
-        semaphore = asyncio.Semaphore(10)
-
-        async def _eval(market, plugin):
-            async with semaphore:
-                await self._evaluate_loop_once(market, plugin)
-
         while self._running:
             if not self._markets or not self._plugins:
                 await asyncio.sleep(self._signal_interval)
@@ -106,13 +137,7 @@ class SignalPoller:
                 len(self._plugins), len(self._markets),
             )
 
-            tasks = [
-                _eval(m, p)
-                for m in self._markets
-                for p in self._plugins
-                if p.can_evaluate(m)
-            ]
-            await asyncio.gather(*tasks, return_exceptions=True)
+            await self._evaluate_cycle()
 
             logger.info("Signal evaluation cycle complete")
             await asyncio.sleep(self._signal_interval)
