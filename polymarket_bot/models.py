@@ -60,6 +60,13 @@ class SignalEvent:
 
 
 @dataclass(frozen=True)
+class SignalBatchEvent:
+    """All signals from one evaluation cycle for a single market."""
+    signals: tuple[Signal, ...]
+    market: Market
+
+
+@dataclass(frozen=True)
 class ArbitrageOpportunity:
     market_ids: dict[str, str]
     platforms: list[str]
