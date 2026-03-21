@@ -88,7 +88,7 @@ risk:
   max_exposure_pct: 0.60
   max_daily_loss_pct: 0.08
   max_correlated_exposure_pct: 0.20
-  min_edge: 0.07
+  min_edge: 0.05
   kelly_fraction: 0.5
   bootstrap_trades: 30
   bootstrap_size_pct: 0.04
