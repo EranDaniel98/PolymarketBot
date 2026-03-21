@@ -153,11 +153,68 @@ class DecisionEngine:
         """Set shared market cache for question/category lookups."""
         self._market_cache = cache
 
-    async def _exposure_maxed(self) -> bool:
-        """Check if total exposure is at or above the limit."""
+    async def _try_rotation(
+        self, new_decision: TradeDecision, new_market_price: float, _slog
+    ) -> bool:
+        """Try to rotate out the weakest position to make room for a better trade.
+
+        Returns True if rotation was initiated.
+        """
+        if not hasattr(self, '_exit_manager') or not self._exit_manager:
+            return False
+
+        from polymarket_bot.decision.risk import estimate_true_probability
+
+        # Compute new trade's edge
+        p_est = estimate_true_probability(new_decision.confidence, new_market_price)
+        new_edge = abs(p_est - new_market_price)
+
+        # Find the weakest position eligible for rotation
+        price_getter = self._exit_manager._price_getter
+        candidate = self._risk.find_rotation_candidate(new_edge, price_getter)
+        if candidate is None:
+            return False
+
+        rotate_id, worst_edge = candidate
+        pos = self._exit_manager._positions[rotate_id]
+
+        _slog.info(
+            "Rotation: selling %s (edge %.3f) for %s (edge %.3f)",
+            rotate_id[:16], worst_edge, new_decision.market_id[:16], new_edge,
+            extra={
+                "event_type": "position_rotation",
+                "exit_market_id": rotate_id,
+                "exit_edge": round(worst_edge, 4),
+                "enter_market_id": new_decision.market_id,
+                "enter_edge": round(new_edge, 4),
+                "enter_confidence": new_decision.confidence,
+            },
+        )
+
+        # Trigger exit on the weak position
+        exit_decision = TradeDecision(
+            market_id=pos.market_id,
+            direction=pos.direction,
+            amount=pos.amount,
+            confidence=0.99,
+            signals=[],
+            order_type=OrderType.LIMIT,
+            tokens=pos.tokens,
+            is_exit=True,
+        )
+        await self._bus.publish("trade_decision", exit_decision)
+        await self._exit_manager.track_exit(pos.market_id)
+        self._risk.record_exit(pos.market_id)
+
+        # Now publish the new trade
+        await self._bus.publish("trade_decision", new_decision)
+        return True
+
+    async def _exposure_ratio(self) -> float:
+        """Return current exposure as a fraction of the limit (0.0 to 1.0+)."""
         exposure = await self._db.get_total_exposure()
         max_exposure = self._risk._bankroll * self._risk._config.max_exposure_pct
-        return exposure >= max_exposure
+        return exposure / max_exposure if max_exposure > 0 else 1.0
 
     async def on_signal(self, signal_event: SignalEvent) -> None:
         if self._risk.circuit_breaker_active:
@@ -170,10 +227,15 @@ class DecisionEngine:
                 logger.debug("Already holding position in %s — skipping", signal_event.market.id)
                 return
 
-        # Short-circuit when exposure is maxed — avoid wasting LLM/API calls
-        if await self._exposure_maxed():
-            logger.debug("Exposure maxed — skipping signal for %s", signal_event.market.id)
-            return
+        # Short-circuit when exposure is maxed and no rotation possible
+        exposure_pct = await self._exposure_ratio()
+        if exposure_pct >= self._risk._config.rotation_exposure_threshold:
+            # Check if rotation might be possible before doing expensive work
+            if not (hasattr(self, '_exit_manager') and self._exit_manager
+                    and self._exit_manager._positions):
+                logger.debug("Exposure at %.0f%% with no positions to rotate — skipping %s",
+                            exposure_pct * 100, signal_event.market.id)
+                return
 
         signal = signal_event.signal
         market = signal_event.market
@@ -291,20 +353,27 @@ class DecisionEngine:
 
         approved, reason = await self._risk.check(decision, market.current_price)
         if not approved:
-            _slog.warning(
-                "Risk rejected: %s %s — %s", direction.value, market.id[:16], reason,
-                extra={
-                    "event_type": "risk_rejected",
-                    "market_id": market.id,
-                    "question": market.question,
-                    "direction": direction.value,
-                    "amount": size,
-                    "confidence": composite,
-                    "market_price": market.current_price,
-                    "rejection_reason": reason,
-                    "signals": [s.source for s in recent_signals],
-                },
-            )
+            # Try position rotation if rejected due to max exposure
+            rotated = False
+            if "Max exposure" in reason:
+                rotated = await self._try_rotation(decision, market.current_price, _slog)
+
+            if not rotated:
+                _slog.warning(
+                    "Risk rejected: %s %s — %s", direction.value, market.id[:16], reason,
+                    extra={
+                        "event_type": "risk_rejected",
+                        "market_id": market.id,
+                        "question": market.question,
+                        "direction": direction.value,
+                        "amount": size,
+                        "confidence": composite,
+                        "market_price": market.current_price,
+                        "rejection_reason": reason,
+                        "signals": [s.source for s in recent_signals],
+                    },
+                )
+            # Rotation already published both exit and entry — done
             return
 
         # Save signal-to-trade linkage
@@ -320,7 +389,9 @@ class DecisionEngine:
         if self._risk.circuit_breaker_active:
             return
 
-        if await self._exposure_maxed():
+        exposure_pct = await self._exposure_ratio()
+        if exposure_pct >= 1.0:
+            # Arb path doesn't do rotation — too time-sensitive
             return
 
         polymarket_id = arb.market_ids.get("polymarket")

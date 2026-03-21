@@ -181,6 +181,9 @@ class RiskConfig:
     recovery_hours: int = 2
     recovery_sizing_pct: float = 0.50
     min_trade_size: float = 10.0
+    rotation_edge_multiplier: float = 1.5  # New trade needs 1.5x edge of worst position
+    rotation_min_hold_minutes: int = 30    # Don't rotate positions held less than this
+    rotation_exposure_threshold: float = 0.95  # Trigger rotation when exposure >= 95% of limit
 
 
 @dataclass

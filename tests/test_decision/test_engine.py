@@ -4,6 +4,7 @@ from datetime import datetime, timedelta, timezone
 from polymarket_bot.decision.engine import DecisionEngine, _infer_category
 from polymarket_bot.config import ConfidenceThresholds, SignalsConfig
 from polymarket_bot.models import Signal, Direction, Market, SignalEvent, OrderType
+from polymarket_bot.exit_manager import ExitManager, TrackedPosition
 
 
 @pytest.fixture
@@ -23,6 +24,9 @@ def mock_risk():
     risk._bankroll = 5000.0
     risk._config = MagicMock()
     risk._config.max_exposure_pct = 0.50
+    risk._config.rotation_exposure_threshold = 0.95
+    risk._config.rotation_edge_multiplier = 1.5
+    risk._config.rotation_min_hold_minutes = 30
     return risk
 
 
@@ -181,8 +185,8 @@ def test_infer_category_general():
 
 
 @pytest.mark.asyncio
-async def test_exposure_maxed_skips_signal(engine, market, mock_db):
-    """When exposure is at the limit, signals should be short-circuited."""
+async def test_exposure_maxed_skips_signal_no_positions(engine, market, mock_db):
+    """When exposure is at the limit and no positions to rotate, signals should be short-circuited."""
     mock_db.get_total_exposure.return_value = 2500.0  # == bankroll * 0.50
     signal = Signal(
         source="llm", market_id="m1", direction=Direction.YES,
@@ -208,6 +212,7 @@ async def test_single_source_blocked_even_with_auto_approve(mock_bus, mock_db):
     mock_risk._bankroll = 5000.0
     mock_risk._config = MagicMock()
     mock_risk._config.max_exposure_pct = 0.50
+    mock_risk._config.rotation_exposure_threshold = 0.95
 
     eng = DecisionEngine(
         risk_manager=mock_risk, event_bus=mock_bus, database=mock_db,
@@ -230,3 +235,155 @@ async def test_single_source_blocked_even_with_auto_approve(mock_bus, mock_db):
     if calls:
         topics = [c[0][0] for c in calls]
         assert "trade_decision" not in topics
+
+
+@pytest.mark.asyncio
+async def test_rotation_sells_weak_position_for_stronger(mock_bus, mock_db):
+    """When exposure is maxed, a strong new trade should rotate out a weak position."""
+    from polymarket_bot.decision.risk import RiskManager
+    from polymarket_bot.config import RiskConfig
+
+    config = RiskConfig(
+        max_position_pct=0.10, max_exposure_pct=0.50, max_daily_loss_pct=0.10,
+        min_edge=0.03, kelly_fraction=0.5, bootstrap_trades=50,
+        bootstrap_size_pct=0.01, cooldown_seconds=300,
+        rotation_edge_multiplier=1.5, rotation_min_hold_minutes=30,
+        rotation_exposure_threshold=0.95,
+    )
+    mock_db.get_trade_count.return_value = 0
+    mock_db.get_daily_pnl.return_value = 0.0
+    mock_db.get_total_exposure.return_value = 2500.0  # == 5000 * 0.50
+
+    risk = RiskManager(config=config, database=mock_db, bankroll=5000.0)
+
+    # Create exit manager with a weak position (entered at 0.40, current still at 0.40 → edge ~0)
+    exit_mgr = MagicMock()
+    weak_pos = TrackedPosition(
+        market_id="weak_market", direction=Direction.YES,
+        entry_price=0.40, amount=100.0,
+        entry_time=datetime.now(timezone.utc) - timedelta(hours=2),  # > 30min
+        tokens={"YES": "0xweak"},
+    )
+    exit_mgr._positions = {"weak_market": weak_pos}
+    exit_mgr._price_getter = lambda platform, mid: 0.41 if mid == "weak_market" else None
+    exit_mgr.track_exit = AsyncMock()
+    risk._exit_manager = exit_mgr
+
+    thresholds = ConfidenceThresholds(auto_execute=0.5, notify=0.3, auto_approve_all=True)
+    eng = DecisionEngine(
+        risk_manager=risk, event_bus=mock_bus, database=mock_db,
+        thresholds=thresholds, signals_config=SignalsConfig(),
+    )
+    eng.set_exit_manager(exit_mgr)
+
+    market = Market(
+        id="strong_market", question="Will BTC hit 100k?",
+        end_date=datetime(2026, 12, 31, tzinfo=timezone.utc),
+        tokens={"YES": "0xstrong", "NO": "0xno"}, current_price=0.30,
+    )
+    signal = Signal(
+        source="bookmaker", market_id="strong_market", direction=Direction.YES,
+        confidence=0.85, reasoning="", timestamp=datetime.now(timezone.utc),
+    )
+    signal2 = Signal(
+        source="divergence", market_id="strong_market", direction=Direction.YES,
+        confidence=0.80, reasoning="", timestamp=datetime.now(timezone.utc),
+    )
+    # Need 2 signals to pass min_signal_sources gate
+    mock_db.get_signals.return_value = [{
+        "source": "divergence", "market_id": "strong_market",
+        "direction": "YES", "confidence": 0.80, "reasoning": "",
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }]
+
+    event = SignalEvent(signal=signal, market=market)
+    await eng.on_signal(event)
+
+    # Should have published 2 trade_decisions: exit for weak + entry for strong
+    calls = mock_bus.publish.call_args_list
+    trade_decisions = [c for c in calls if c[0][0] == "trade_decision"]
+    assert len(trade_decisions) == 2
+    # First is exit
+    exit_dec = trade_decisions[0][0][1]
+    assert exit_dec.is_exit is True
+    assert exit_dec.market_id == "weak_market"
+    # Second is entry
+    entry_dec = trade_decisions[1][0][1]
+    assert entry_dec.market_id == "strong_market"
+
+
+@pytest.mark.asyncio
+async def test_rotation_blocked_by_min_hold_time(mock_bus, mock_db):
+    """Positions held less than rotation_min_hold_minutes should not be rotated."""
+    from polymarket_bot.decision.risk import RiskManager
+    from polymarket_bot.config import RiskConfig
+
+    config = RiskConfig(
+        max_position_pct=0.10, max_exposure_pct=0.50, max_daily_loss_pct=0.10,
+        min_edge=0.03, kelly_fraction=0.5, bootstrap_trades=50,
+        bootstrap_size_pct=0.01, cooldown_seconds=300,
+        rotation_edge_multiplier=1.5, rotation_min_hold_minutes=30,
+        rotation_exposure_threshold=0.95,
+    )
+    mock_db.get_trade_count.return_value = 0
+    mock_db.get_daily_pnl.return_value = 0.0
+    mock_db.get_total_exposure.return_value = 2500.0
+
+    risk = RiskManager(config=config, database=mock_db, bankroll=5000.0)
+
+    # Position held only 5 minutes — too fresh to rotate
+    exit_mgr = MagicMock()
+    fresh_pos = TrackedPosition(
+        market_id="fresh_market", direction=Direction.YES,
+        entry_price=0.40, amount=100.0,
+        entry_time=datetime.now(timezone.utc) - timedelta(minutes=5),
+        tokens={"YES": "0xfresh"},
+    )
+    exit_mgr._positions = {"fresh_market": fresh_pos}
+    exit_mgr._price_getter = lambda platform, mid: 0.41
+    risk._exit_manager = exit_mgr
+
+    # find_rotation_candidate should return None — position too fresh
+    candidate = risk.find_rotation_candidate(new_edge=0.10, price_getter=exit_mgr._price_getter)
+    assert candidate is None
+
+
+@pytest.mark.asyncio
+async def test_rotation_blocked_by_insufficient_edge(mock_bus, mock_db):
+    """New trade with only slightly better edge should NOT trigger rotation."""
+    from polymarket_bot.decision.risk import RiskManager
+    from polymarket_bot.config import RiskConfig
+
+    config = RiskConfig(
+        max_position_pct=0.10, max_exposure_pct=0.50, max_daily_loss_pct=0.10,
+        min_edge=0.03, kelly_fraction=0.5, bootstrap_trades=50,
+        bootstrap_size_pct=0.01, cooldown_seconds=300,
+        rotation_edge_multiplier=1.5, rotation_min_hold_minutes=30,
+        rotation_exposure_threshold=0.95,
+    )
+    mock_db.get_trade_count.return_value = 0
+    mock_db.get_daily_pnl.return_value = 0.0
+    mock_db.get_total_exposure.return_value = 2500.0
+
+    risk = RiskManager(config=config, database=mock_db, bankroll=5000.0)
+
+    exit_mgr = MagicMock()
+    # Position with 5% edge (entered at 0.40, now at 0.45)
+    pos = TrackedPosition(
+        market_id="ok_market", direction=Direction.YES,
+        entry_price=0.40, amount=100.0,
+        entry_time=datetime.now(timezone.utc) - timedelta(hours=2),
+        tokens={"YES": "0xok"},
+    )
+    exit_mgr._positions = {"ok_market": pos}
+    exit_mgr._price_getter = lambda platform, mid: 0.45
+    risk._exit_manager = exit_mgr
+
+    # New edge 0.06 is NOT >= 1.5 * 0.05 (= 0.075) — should not rotate
+    candidate = risk.find_rotation_candidate(new_edge=0.06, price_getter=exit_mgr._price_getter)
+    assert candidate is None
+
+    # New edge 0.08 IS >= 1.5 * 0.05 — should rotate
+    candidate = risk.find_rotation_candidate(new_edge=0.08, price_getter=exit_mgr._price_getter)
+    assert candidate is not None
+    assert candidate[0] == "ok_market"

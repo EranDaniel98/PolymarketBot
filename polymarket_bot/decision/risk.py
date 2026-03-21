@@ -203,5 +203,53 @@ class RiskManager:
             return True
         return False
 
+    def find_rotation_candidate(
+        self, new_edge: float, price_getter
+    ) -> tuple[str, float] | None:
+        """Find the weakest position to rotate out if the new trade has enough edge advantage.
+
+        Returns (market_id, current_edge) of the candidate, or None.
+        """
+        if not self._exit_manager:
+            return None
+
+        now = datetime.now(timezone.utc)
+        min_hold = timedelta(minutes=self._config.rotation_min_hold_minutes)
+        multiplier = self._config.rotation_edge_multiplier
+
+        worst_id = None
+        worst_edge = float("inf")
+
+        for mid, pos in self._exit_manager._positions.items():
+            # Skip positions held less than minimum time
+            if now - pos.entry_time < min_hold:
+                continue
+
+            current_price = price_getter("polymarket", mid) if price_getter else None
+            if current_price is None:
+                continue
+
+            # Current edge = how far price has moved in our favor
+            if pos.direction.value == "YES":
+                edge = current_price - pos.entry_price
+            else:
+                edge = pos.entry_price - current_price
+
+            if edge < worst_edge:
+                worst_edge = edge
+                worst_id = mid
+
+        if worst_id is None:
+            return None
+
+        # Only rotate if new trade's edge is significantly better
+        # For negative-edge positions, always allow rotation if new edge is positive
+        if worst_edge < 0 and new_edge > 0:
+            return worst_id, worst_edge
+        if worst_edge >= 0 and new_edge < multiplier * worst_edge:
+            return None
+
+        return worst_id, worst_edge
+
     def update_bankroll(self, new_bankroll: float) -> None:
         self._bankroll = new_bankroll
