@@ -328,7 +328,7 @@ async def run_bot(config_path: str = "config.yaml"):
     console.print("[bold green]Exit manager started[/]")
 
     # Market scanner + smart filtering + signal polling loop
-    scanner = MarketScanner(max_markets=50)
+    scanner = MarketScanner(max_markets=200)
     await scanner.start()
     market_filter = MarketFilter()
     poller = SignalPoller(

@@ -39,8 +39,8 @@ def estimate_true_probability(confidence: float, market_price: float) -> float:
     """
     # The signal implies true probability is ABOVE market price (for YES signals).
     # Map confidence → shift magnitude using sigmoid damping.
-    # Max shift is 15% of the remaining room toward certainty.
-    max_shift = 0.15
+    # Max shift is 25% of the remaining room toward certainty.
+    max_shift = 0.25
     room = 1.0 - market_price  # room to move up for YES
     shift = max_shift * room * confidence
     p_estimated = market_price + shift
