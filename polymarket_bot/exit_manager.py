@@ -209,15 +209,22 @@ class ExitManager:
 
         hours_held = (datetime.now(timezone.utc) - pos.entry_time).total_seconds() / 3600
 
+        current_price_val = self._price_getter("polymarket", pos.market_id) if self._price_getter else None
         logger.info(
             "Exit: %s %s", pos.direction.value, pos.market_id[:16],
             extra={
                 "event_type": "exit",
                 "market_id": pos.market_id,
-                "reason": reason,
-                "pnl_pct": pnl_pct,
-                "hours_held": hours_held,
                 "direction": pos.direction.value,
+                "reason": reason,
+                "entry_price": pos.entry_price,
+                "current_price": current_price_val,
+                "amount": pos.amount,
+                "pnl_pct": round(pnl_pct, 4),
+                "pnl_usd": round(pnl_pct * pos.amount, 2),
+                "peak_pnl_pct": round(pos.peak_pnl_pct, 4),
+                "hours_held": round(hours_held, 1),
+                "category": pos.category,
             },
         )
 

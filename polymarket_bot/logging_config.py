@@ -9,6 +9,9 @@ from pathlib import Path
 class JsonFormatter(logging.Formatter):
     """Formats log records as single-line JSON objects."""
 
+    # Standard LogRecord fields to exclude from extras
+    _BUILTIN = frozenset(logging.LogRecord("", 0, "", 0, "", (), None).__dict__.keys())
+
     def format(self, record: logging.LogRecord) -> str:
         entry = {
             "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -16,12 +19,9 @@ class JsonFormatter(logging.Formatter):
             "logger": record.name,
             "message": record.getMessage(),
         }
-        for key in ("event_type", "source", "market_id", "direction",
-                     "confidence", "market_price", "amount", "action",
-                     "signals", "approved", "reason", "edge",
-                     "pnl_pct", "hours_held", "category"):
-            val = getattr(record, key, None)
-            if val is not None:
+        # Capture ALL custom extra fields dynamically
+        for key, val in record.__dict__.items():
+            if key not in self._BUILTIN and val is not None:
                 entry[key] = val
         return json.dumps(entry, default=str)
 

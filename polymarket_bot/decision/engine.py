@@ -174,27 +174,54 @@ class DecisionEngine:
             logger.info("Auto-approve mode: promoting notify->auto_execute for %s", market.id)
             action = "auto_execute"
 
+        # Structured log for log_only decisions (missed opportunities)
+        import logging as _logging
+        _slog = _logging.getLogger("polymarket_bot.structured")
+
         if action == "log_only":
-            logger.info("Low confidence %.2f for %s — logging only", composite, market.id)
+            _slog.info(
+                "Skipped: %.2f for %s", composite, market.id[:16],
+                extra={
+                    "event_type": "trade_skipped",
+                    "market_id": market.id,
+                    "question": market.question,
+                    "category": market.category or "",
+                    "confidence": composite,
+                    "market_price": market.current_price,
+                    "volume": market.volume,
+                    "signals": [
+                        {"source": s.source, "direction": s.direction.value,
+                         "confidence": round(s.confidence, 3)}
+                        for s in recent_signals
+                    ],
+                    "distinct_sources": len({s.source for s in recent_signals}),
+                },
+            )
             return
 
         direction = self.determine_majority_direction(recent_signals)
         size = await self._risk.calculate_position_size(composite, market.current_price)
 
-        # Structured log for analytics
-        import logging as _logging
-        _slog = _logging.getLogger("polymarket_bot.structured")
         _slog.info(
             "Decision: %s %s $%.2f (%s)", direction.value, market.id[:16], size, action,
             extra={
                 "event_type": "trade_decision",
                 "market_id": market.id,
+                "question": market.question,
+                "category": market.category or "",
                 "direction": direction.value,
                 "amount": size,
                 "confidence": composite,
                 "action": action,
-                "signals": [s.source for s in recent_signals],
                 "market_price": market.current_price,
+                "volume": market.volume,
+                "signals": [
+                    {"source": s.source, "direction": s.direction.value,
+                     "confidence": round(s.confidence, 3),
+                     "reasoning": s.reasoning[:500]}
+                    for s in recent_signals
+                ],
+                "distinct_sources": len({s.source for s in recent_signals}),
             },
         )
 
@@ -212,7 +239,20 @@ class DecisionEngine:
 
         approved, reason = await self._risk.check(decision, market.current_price)
         if not approved:
-            logger.info("Risk rejected: %s", reason)
+            _slog.warning(
+                "Risk rejected: %s %s — %s", direction.value, market.id[:16], reason,
+                extra={
+                    "event_type": "risk_rejected",
+                    "market_id": market.id,
+                    "question": market.question,
+                    "direction": direction.value,
+                    "amount": size,
+                    "confidence": composite,
+                    "market_price": market.current_price,
+                    "rejection_reason": reason,
+                    "signals": [s.source for s in recent_signals],
+                },
+            )
             return
 
         # Save signal-to-trade linkage

@@ -167,6 +167,7 @@ class RiskManager:
                 remaining = self._config.cooldown_seconds - elapsed
                 return False, f"Cooldown: {remaining:.0f}s remaining for market {decision.market_id}"
 
+        kelly_frac = self._kelly_fraction_for_confidence(decision.confidence)
         logger.info(
             "Risk: %s — Approved", decision.market_id[:16],
             extra={
@@ -175,7 +176,12 @@ class RiskManager:
                 "approved": True,
                 "reason": "Approved",
                 "amount": decision.amount,
-                "edge": edge,
+                "edge": round(edge, 4),
+                "estimated_probability": round(p_est, 4),
+                "market_price": market_price,
+                "kelly_fraction": kelly_frac,
+                "bankroll": self._bankroll,
+                "in_recovery": self.in_recovery,
             },
         )
         return True, "Approved"
