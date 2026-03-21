@@ -1,11 +1,31 @@
 """Lightweight web dashboard for PolymarketBot."""
 
+import os
+import secrets
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI, HTTPException, status
 from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.security import HTTPBasic, HTTPBasicCredentials
 
 app = FastAPI(title="PolymarketBot Dashboard")
+security = HTTPBasic()
+
+DASH_USER = os.environ.get("DASH_USER", "admin")
+DASH_PASS = os.environ.get("DASH_PASS", "")
+
+
+def check_auth(credentials: HTTPBasicCredentials = Depends(security)):
+    if not DASH_PASS:
+        return  # No password set = no auth required (local dev)
+    correct_user = secrets.compare_digest(credentials.username, DASH_USER)
+    correct_pass = secrets.compare_digest(credentials.password, DASH_PASS)
+    if not (correct_user and correct_pass):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid credentials",
+            headers={"WWW-Authenticate": "Basic"},
+        )
 
 
 def get_db():
@@ -21,7 +41,7 @@ def get_market_cache() -> dict:
 
 
 @app.get("/api/stats")
-async def stats():
+async def stats(_=Depends(check_auth)):
     db = get_db()
     exit_mgr = get_exit_mgr()
     return {
@@ -35,7 +55,7 @@ async def stats():
 
 
 @app.get("/api/positions")
-async def positions():
+async def positions(_=Depends(check_auth)):
     db = get_db()
     cache = get_market_cache()
     rows = await db.load_positions()
@@ -48,7 +68,7 @@ async def positions():
 
 
 @app.get("/api/trades")
-async def trades():
+async def trades(_=Depends(check_auth)):
     db = get_db()
     cache = get_market_cache()
     rows = (await db.get_trades())[:50]
@@ -61,6 +81,6 @@ async def trades():
 
 
 @app.get("/", response_class=HTMLResponse)
-async def dashboard():
+async def dashboard(_=Depends(check_auth)):
     html_path = Path(__file__).parent / "templates" / "index.html"
     return HTMLResponse(html_path.read_text())

@@ -42,9 +42,9 @@ class MarketFilter:
             return 0.0
 
         # Filter: price must be in tradeable range
-        # Allow extreme prices (0.02-0.98) through with lower score for FLB strategy
+        # Allow extreme prices through for FLB strategy (targets > 0.92 and < 0.08)
         p = market.current_price
-        if p < 0.02 or p > 0.98:
+        if p < 0.01 or p > 0.99:
             return 0.0
 
         # Score: prefer markets where price leans but might be wrong (0.15-0.40, 0.60-0.85).

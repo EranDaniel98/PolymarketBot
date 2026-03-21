@@ -24,7 +24,7 @@ from polymarket_bot.models import (
     Direction, Market, SignalEvent, TradeDecision, TradeExecution, ArbitrageOpportunity,
 )
 from polymarket_bot.calibrator import WeightCalibrator
-from polymarket_bot.exit_manager import ExitManager
+from polymarket_bot.exit_manager import ExitManager, ExitRule
 from polymarket_bot.fast_trader import FastTrader
 from polymarket_bot.market_filter import MarketFilter
 from polymarket_bot.resolution_tracker import ResolutionTracker
@@ -42,6 +42,7 @@ from polymarket_bot.signals.divergence import DivergenceSignal
 from polymarket_bot.signals.weather import WeatherSignal
 from polymarket_bot.signals.whale import WhaleSignal
 from polymarket_bot.arbitrage.structural_arb import StructuralArbDetector
+from polymarket_bot.thin_market_detector import ThinMarketDetector
 
 logger = logging.getLogger("polymarket_bot")
 
@@ -54,6 +55,9 @@ def setup_logging():
         format="%(message)s",
         datefmt="[%X]",
     )
+    # Suppress noisy HTTP request logs
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 
 def build_signal_plugins(config: BotConfig) -> list[SignalPlugin]:
@@ -78,6 +82,7 @@ def build_signal_plugins(config: BotConfig) -> list[SignalPlugin]:
             ensemble_enabled=sc.llm.ensemble_enabled,
             ensemble_models=sc.llm.ensemble_models,
             aggregation=sc.llm.aggregation,
+            confidence_discount=sc.llm.confidence_discount,
         ))
     if sc.bookmaker.enabled:
         plugins.append(BookmakerSignal(
@@ -118,14 +123,28 @@ async def run_bot(config_path: str = "config.yaml"):
     config = load_config(Path(config_path))
     console.print(f"[bold green]Config loaded[/] from {config_path}")
 
+    # File logging (structured JSON) — resolve relative to config dir
+    data_dir = Path(config_path).parent
+    if config.logging.file_enabled:
+        from polymarket_bot.logging_config import setup_file_logging
+        log_path = data_dir / config.logging.file_path
+        file_handler = setup_file_logging(
+            log_path,
+            max_bytes=config.logging.max_size_mb * 1024 * 1024,
+            backup_count=config.logging.backup_count,
+        )
+        logging.getLogger().addHandler(file_handler)
+        console.print(f"[bold green]File logging:[/] {log_path}")
+
     # Paper trading mode banner
     if config.execution.paper_trading:
         console.print(
             "[bold yellow]>>> PAPER TRADING MODE — no real orders will be placed <<<[/]\n"
         )
 
-    # Initialize core
-    db = Database(Path("polymarket_bot.db"))
+    # Initialize core — DB and logs live next to config file
+    data_dir = Path(config_path).parent
+    db = Database(data_dir / "polymarket_bot.db")
     await db.initialize()
     console.print("[bold green]Database initialized[/]")
 
@@ -144,8 +163,8 @@ async def run_bot(config_path: str = "config.yaml"):
     # Risk manager — fetch real bankroll from wallet
     bankroll = await exec_engine.get_balance()
     if bankroll is None or bankroll <= 0:
-        console.print("[bold yellow]WARNING: Could not fetch wallet balance, using default $5000[/]")
-        bankroll = 5000.0
+        bankroll = config.execution.paper_balance
+        console.print(f"[bold yellow]Using paper balance: ${bankroll:.2f}[/]")
     console.print(f"[bold green]Wallet balance:[/] ${bankroll:.2f}")
     risk_manager = RiskManager(config=config.risk, database=db, bankroll=bankroll)
 
@@ -166,6 +185,7 @@ async def run_bot(config_path: str = "config.yaml"):
             bot_token=config.notifications.telegram.bot_token,
             chat_id=config.notifications.telegram.chat_id,
             approval_timeout=config.notifications.telegram.approval_timeout,
+            auto_approve_window=config.notifications.telegram.auto_approve_window,
         )
         await tg.start()
         notifiers.append(tg)
@@ -190,7 +210,18 @@ async def run_bot(config_path: str = "config.yaml"):
     market_cache: dict[str, Market] = {}
 
     # Exit manager — monitors positions and triggers sells
-    exit_mgr = ExitManager(event_bus=bus, database=db, check_interval=30)
+    exit_rules = ExitRule(
+        take_profit=config.exit.take_profit,
+        stop_loss=config.exit.stop_loss,
+        trailing_stop=config.exit.trailing_stop,
+        edge_gone_threshold=config.exit.edge_gone_threshold,
+        time_decay_hours=config.exit.time_decay_hours,
+        trailing_stop_activation=config.exit.trailing_stop_activation,
+        max_hold_hours=config.exit.max_hold_hours,
+    )
+    exit_mgr = ExitManager(event_bus=bus, database=db, rules=exit_rules, check_interval=30)
+    risk_manager._exit_manager = exit_mgr
+    decision_engine.set_exit_manager(exit_mgr)
     exit_mgr.set_price_getter(monitor.get_cached_price)
 
     # Load persisted positions from DB
@@ -237,11 +268,13 @@ async def run_bot(config_path: str = "config.yaml"):
         # Track new entries for exit management
         tokens = cached_market.tokens if cached_market else {}
         end_date = cached_market.end_date if cached_market else None
+        category = cached_market.category if cached_market else ""
         await exit_mgr.track_entry(
             execution.market_id, execution.direction,
             execution.price, execution.amount,
             tokens=tokens,
             end_date=end_date,
+            category=category or "",
         )
         new_balance = await exec_engine.get_balance()
         if new_balance and new_balance > 0:
@@ -361,10 +394,32 @@ async def run_bot(config_path: str = "config.yaml"):
     else:
         console.print("[dim]Fast trader disabled[/]")
 
+    # Thin/new market detector — fast-tracks LLM analysis on low-volume markets
+    thin_detector = ThinMarketDetector(
+        event_bus=bus,
+        llm_plugin=llm_plugin,
+        poll_interval=600,
+    )
+    await thin_detector.start()
+    console.print("[bold green]Thin market detector started[/]")
+
     # Resolution tracker — polls for market outcomes to measure signal accuracy
     resolution_tracker = ResolutionTracker(database=db, poll_interval=300)
     await resolution_tracker.start()
     console.print("[bold green]Resolution tracker started[/]")
+
+    # Periodic circuit breaker reset check (every 30 minutes)
+    async def _circuit_breaker_reset_loop():
+        while True:
+            await asyncio.sleep(1800)
+            try:
+                reset = await risk_manager.maybe_reset_circuit_breaker()
+                if reset:
+                    console.print("[bold green]Circuit breaker reset — trading resumed[/]")
+            except Exception:
+                logger.exception("Circuit breaker reset check failed")
+
+    cb_reset_task = asyncio.create_task(_circuit_breaker_reset_loop())
 
     # Daily report scheduler
     async def _daily_report_loop():
@@ -453,10 +508,12 @@ async def run_bot(config_path: str = "config.yaml"):
         finally:
             console.print("\n[bold yellow]Shutting down...[/]")
             daily_task.cancel()
+            cb_reset_task.cancel()
             if structural_arb_task:
                 structural_arb_task.cancel()
             if fast_trader:
                 await fast_trader.stop()
+            await thin_detector.stop()
             await resolution_tracker.stop()
             await poller.stop()
             await exit_mgr.stop()

@@ -95,6 +95,16 @@ CREATE TABLE IF NOT EXISTS market_resolutions (
     outcome TEXT NOT NULL,
     resolved_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS trade_signals (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    trade_id TEXT NOT NULL,
+    signal_source TEXT NOT NULL,
+    signal_direction TEXT NOT NULL,
+    signal_confidence REAL,
+    market_price_at_signal REAL,
+    timestamp TEXT NOT NULL
+);
 """
 
 MIGRATIONS = [
@@ -324,6 +334,109 @@ class Database:
                 "avg_confidence": row["avg_conf"],
             }
         return report
+
+    # --- Trade-Signal Linkage ---
+
+    async def save_trade_signals(self, trade_id: str, signals: list) -> None:
+        """Save the signals that contributed to a trade decision."""
+        for sig in signals:
+            await self._write(
+                "INSERT INTO trade_signals "
+                "(trade_id, signal_source, signal_direction, signal_confidence, "
+                "market_price_at_signal, timestamp) VALUES (?, ?, ?, ?, ?, ?)",
+                (trade_id, sig.source, sig.direction.value, sig.confidence,
+                 None, sig.timestamp.isoformat()),
+            )
+
+    async def get_win_rate_by_signal(self) -> dict[str, dict]:
+        """Get win rate grouped by signal source for trades that have resolved."""
+        rows = await self._fetch_all(
+            "SELECT ts.signal_source, "
+            "COUNT(DISTINCT ts.trade_id) as n_trades, "
+            "SUM(CASE WHEN t.realized_pnl > 0 THEN 1 ELSE 0 END) as wins "
+            "FROM trade_signals ts "
+            "JOIN trades t ON ts.trade_id = t.order_id "
+            "WHERE t.status = 'filled' AND t.realized_pnl != 0 "
+            "GROUP BY ts.signal_source"
+        )
+        report = {}
+        for row in rows:
+            n = row["n_trades"]
+            report[row["signal_source"]] = {
+                "win_rate": row["wins"] / n if n > 0 else 0,
+                "n_trades": n,
+            }
+        return report
+
+    async def get_confidence_calibration(
+        self, source: str, bucket_size: float = 0.10,
+    ) -> list[dict]:
+        """Bin resolved signals by confidence and compute actual accuracy per bucket."""
+        rows = await self._fetch_all(
+            "SELECT confidence, was_correct FROM signal_outcomes "
+            "WHERE source = ? AND was_correct IS NOT NULL",
+            (source,),
+        )
+        if not rows:
+            return []
+        from collections import defaultdict
+        buckets = defaultdict(lambda: {"correct": 0, "total": 0})
+        for row in rows:
+            conf = row["confidence"]
+            bucket_idx = int(round(conf / bucket_size, 8))
+            bucket_min = round(bucket_idx * bucket_size, 2)
+            buckets[bucket_min]["total"] += 1
+            if row["was_correct"]:
+                buckets[bucket_min]["correct"] += 1
+        result = []
+        for bucket_min in sorted(buckets):
+            b = buckets[bucket_min]
+            result.append({
+                "bucket_min": bucket_min,
+                "bucket_max": round(bucket_min + bucket_size, 2),
+                "total": b["total"],
+                "correct": b["correct"],
+                "accuracy": b["correct"] / b["total"] if b["total"] > 0 else 0,
+            })
+        return result
+
+    async def get_confidence_gap(self, source: str) -> dict | None:
+        """Compute the gap between average predicted confidence and actual accuracy."""
+        row = await self._fetch_one(
+            "SELECT AVG(confidence) as avg_conf, "
+            "AVG(CASE WHEN was_correct = 1 THEN 1.0 ELSE 0.0 END) as accuracy, "
+            "COUNT(*) as n "
+            "FROM signal_outcomes WHERE source = ? AND was_correct IS NOT NULL",
+            (source,),
+        )
+        if not row or row["n"] == 0:
+            return None
+        avg_conf = row["avg_conf"]
+        accuracy = row["accuracy"]
+        return {
+            "avg_confidence": avg_conf,
+            "actual_accuracy": accuracy,
+            "gap": avg_conf - accuracy,
+            "n_signals": row["n"],
+        }
+
+    async def get_fee_impact_report(self) -> dict:
+        """Compute total fees as fraction of trading volume."""
+        row = await self._fetch_one(
+            "SELECT COALESCE(SUM(fees), 0) as total_fees, "
+            "COALESCE(SUM(realized_pnl), 0) as total_pnl, "
+            "COALESCE(SUM(amount), 0) as total_volume, "
+            "COUNT(*) as n_trades "
+            "FROM trades WHERE status = 'filled'"
+        )
+        total_vol = row["total_volume"] if row["total_volume"] else 1
+        return {
+            "total_fees": row["total_fees"],
+            "total_pnl": row["total_pnl"],
+            "total_volume": row["total_volume"],
+            "n_trades": row["n_trades"],
+            "fee_pct_of_volume": row["total_fees"] / total_vol if total_vol > 0 else 0,
+        }
 
     async def get_unresolved_market_ids(self) -> list[str]:
         rows = await self._fetch_all(

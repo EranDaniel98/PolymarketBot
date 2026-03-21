@@ -57,3 +57,16 @@ def test_per_signal_tracking():
     assert "divergence" in result.per_signal
     assert result.per_signal["favorite_longshot"]["wins"] == 1
     assert result.per_signal["divergence"]["losses"] == 1
+
+
+@pytest.mark.asyncio
+async def test_backtest_runs_multiple_signals():
+    """Backtest should evaluate FLB + divergence + weather, not just FLB."""
+    from polymarket_bot.backtesting.engine import build_offline_signals
+    plugins = await build_offline_signals()
+    assert len(plugins) >= 2  # At least FLB + one more
+    names = [p.name for p in plugins]
+    assert "favorite_longshot" in names
+    # Clean up
+    for p in plugins:
+        await p.stop()

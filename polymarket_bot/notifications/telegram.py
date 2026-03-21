@@ -1,6 +1,7 @@
 import asyncio
 import hashlib
 import logging
+from datetime import datetime, timezone, timedelta
 
 from polymarket_bot.models import TradeDecision
 from polymarket_bot.notifications.base import Notifier, NotificationLevel
@@ -15,15 +16,18 @@ LEVEL_EMOJI = {
 
 
 class TelegramNotifier(Notifier):
-    def __init__(self, bot_token: str, chat_id: str, approval_timeout: int = 300):
+    def __init__(self, bot_token: str, chat_id: str, approval_timeout: int = 300,
+                 auto_approve_window: int = 3600):
         self._bot_token = bot_token
         self._chat_id = chat_id
         self._approval_timeout = approval_timeout
+        self._auto_approve_window = auto_approve_window
         self._bot = None
         self._app = None
         self._pending_approvals: dict[str, asyncio.Future] = {}
         self._callback_key_map: dict[str, str] = {}  # short_key -> market_id
         self._pending_decisions: dict[str, TradeDecision] = {}  # market_id -> decision
+        self._approved_markets: dict[str, datetime] = {}  # market_id -> approval time
         self.auto_decide_callback = None  # async fn(TradeDecision) -> bool
 
     @property
@@ -75,6 +79,7 @@ class TelegramNotifier(Notifier):
         action, short_key = parts
         market_id = self._callback_key_map.get(short_key, short_key)
         if action == "approve":
+            self._approved_markets[market_id] = datetime.now(timezone.utc)
             self.resolve_approval(market_id, True)
             await query.answer("Trade approved!")
             await query.edit_message_reply_markup(reply_markup=None)
@@ -89,6 +94,8 @@ class TelegramNotifier(Notifier):
                 try:
                     approved = await self.auto_decide_callback(decision)
                     verdict = "APPROVED" if approved else "REJECTED"
+                    if approved:
+                        self._approved_markets[market_id] = datetime.now(timezone.utc)
                     await query.edit_message_reply_markup(reply_markup=None)
                     await self._send_message(
                         f"\U0001f916 <b>AI Decision: {verdict}</b>\n"
@@ -192,6 +199,21 @@ class TelegramNotifier(Notifier):
             self._pending_approvals.pop(market_id, None)
 
     async def request_approval(self, decision: TradeDecision) -> bool:
+        # Auto-approve if user already approved this market recently
+        prev_approval = self._approved_markets.get(decision.market_id)
+        if prev_approval:
+            elapsed = (datetime.now(timezone.utc) - prev_approval).total_seconds()
+            if elapsed < self._auto_approve_window:
+                market_label = decision.question or decision.market_id
+                await self._send_message(
+                    f"\u2705 <b>Auto-approved</b> (previously approved {elapsed/60:.0f}m ago)\n\n"
+                    f"Market: <b>{market_label}</b>\n"
+                    f"Direction: <b>{decision.direction.value}</b>\n"
+                    f"Amount: <b>${decision.amount:.2f}</b>"
+                )
+                logger.info("Auto-approved %s (approved %.0fs ago)", decision.market_id, elapsed)
+                return True
+
         await self._send_approval_message(decision)
         response = await self._wait_for_response(decision.market_id)
         if response is None:
@@ -201,6 +223,8 @@ class TelegramNotifier(Notifier):
                 NotificationLevel.WARNING,
             )
             return False
+        if response:
+            self._approved_markets[decision.market_id] = datetime.now(timezone.utc)
         return response
 
     def resolve_approval(self, market_id: str, approved: bool) -> None:

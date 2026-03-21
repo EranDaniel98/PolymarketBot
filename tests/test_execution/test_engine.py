@@ -94,3 +94,37 @@ async def test_execute_with_is_exit(engine, mock_bus, mock_db):
         # Verify is_exit was passed through
         call_kwargs = mock_place.call_args
         assert call_kwargs[0][5] is True or call_kwargs[1].get("is_exit") is True
+
+
+async def test_order_book_depth_paper_mode(mock_db, mock_bus):
+    """Paper mode should skip depth check and return original amount."""
+    config = ExecutionConfig(paper_trading=True)
+    engine = ExecutionEngine(config=config, database=mock_db, event_bus=mock_bus)
+    has_liq, size = await engine.check_order_book_depth("0xtoken", "BUY", 100.0)
+    assert has_liq is True
+    assert size == 100.0
+
+
+async def test_order_book_depth_reduces_size(mock_db, mock_bus):
+    """When order is >50% of book liquidity, size should be reduced."""
+    config = ExecutionConfig(paper_trading=False)
+    engine = ExecutionEngine(config=config, database=mock_db, event_bus=mock_bus)
+
+    mock_client = MagicMock()
+    book_data = {
+        "asks": [
+            {"price": "0.50", "size": "100"},  # $50
+            {"price": "0.51", "size": "100"},  # $51
+        ],
+    }
+    mock_client.get_order_book.return_value = book_data
+    engine._clob_client = mock_client
+
+    async def fake_to_thread(fn, *args):
+        return fn(*args)
+
+    with patch("polymarket_bot.execution.engine.asyncio.to_thread", side_effect=fake_to_thread):
+        has_liq, size = await engine.check_order_book_depth("0xtoken", "BUY", 80.0)
+        assert has_liq is True
+        # Total liq = 0.50*100 + 0.51*100 = 101. 50% = 50.5. 80 > 50.5, so reduced
+        assert size == pytest.approx(50.5, abs=0.1)

@@ -16,11 +16,13 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class ExitRule:
-    take_profit: float = 0.20     # Exit when unrealized P&L > 20%
-    stop_loss: float = -0.15      # Exit when unrealized P&L < -15% (symmetric with TP)
+    take_profit: float = 0.25     # Exit when unrealized P&L > 25%
+    stop_loss: float = -0.10      # Exit when unrealized P&L < -10% — cut losers fast
     edge_gone_threshold: float = 0.02  # Exit when market moves to within 2% of entry
     time_decay_hours: int = 24    # Start tightening stops after 24h
-    trailing_stop: float = 0.10   # Trail 10% below peak unrealized P&L
+    trailing_stop: float = 0.08   # Trail 8% below peak unrealized P&L
+    trailing_stop_activation: float = 0.03  # Activate trailing stop after 3% gain
+    max_hold_hours: int = 168     # 7 days max hold for losing positions
 
 
 @dataclass
@@ -33,6 +35,7 @@ class TrackedPosition:
     peak_pnl_pct: float = 0.0
     tokens: dict[str, str] = field(default_factory=dict)
     end_date: datetime | None = None
+    category: str = ""
 
 
 class ExitManager:
@@ -59,7 +62,8 @@ class ExitManager:
     async def track_entry(self, market_id: str, direction: Direction,
                           entry_price: float, amount: float,
                           tokens: dict[str, str] | None = None,
-                          end_date: datetime | None = None) -> None:
+                          end_date: datetime | None = None,
+                          category: str = "") -> None:
         self._positions[market_id] = TrackedPosition(
             market_id=market_id,
             direction=direction,
@@ -68,6 +72,7 @@ class ExitManager:
             entry_time=datetime.now(timezone.utc),
             tokens=tokens or {},
             end_date=end_date,
+            category=category,
         )
         await self._db.save_position(
             market_id, direction.value, amount, entry_price,
@@ -78,6 +83,15 @@ class ExitManager:
     async def track_exit(self, market_id: str) -> None:
         self._positions.pop(market_id, None)
         await self._db.delete_position(market_id)
+
+    def get_correlated_exposure(self, category: str) -> float:
+        """Sum of exposure for positions matching the given category."""
+        if not category:
+            return 0.0
+        return sum(
+            pos.amount for pos in self._positions.values()
+            if pos.category == category
+        )
 
     async def load_from_db(self) -> None:
         rows = await self._db.load_positions()
@@ -155,8 +169,8 @@ class ExitManager:
         if pnl_pct <= stop_loss:
             return f"Stop loss: {pnl_pct:+.1%} (limit: {stop_loss:+.1%})"
 
-        # Trailing stop — only activates after we've had meaningful gains
-        if pos.peak_pnl_pct > 0.05:
+        # Trailing stop — activates after gains exceed threshold
+        if pos.peak_pnl_pct > self._rules.trailing_stop_activation:
             trailing_trigger = pos.peak_pnl_pct - self._rules.trailing_stop
             if pnl_pct <= trailing_trigger:
                 return (f"Trailing stop: {pnl_pct:+.1%} "
@@ -176,9 +190,37 @@ class ExitManager:
         if abs(edge_remaining) < edge_threshold and hours_held > 1:
             return f"Edge gone: remaining edge {edge_remaining:+.3f} < {edge_threshold:.3f} after {hours_held:.0f}h"
 
+        # Max hold time — only triggers for positions NOT in profit
+        if hours_held > self._rules.max_hold_hours and pnl_pct <= 0:
+            return f"Max hold time: {hours_held:.0f}h (limit: {self._rules.max_hold_hours}h)"
+
         return None
 
     async def _trigger_exit(self, pos: TrackedPosition, reason: str) -> None:
+        # Compute pnl_pct for structured logging
+        pnl_pct = 0.0
+        if self._price_getter:
+            current_price = self._price_getter("polymarket", pos.market_id)
+            if current_price is not None:
+                if pos.direction == Direction.YES:
+                    pnl_pct = (current_price - pos.entry_price) / pos.entry_price
+                else:
+                    pnl_pct = (pos.entry_price - current_price) / pos.entry_price
+
+        hours_held = (datetime.now(timezone.utc) - pos.entry_time).total_seconds() / 3600
+
+        logger.info(
+            "Exit: %s %s", pos.direction.value, pos.market_id[:16],
+            extra={
+                "event_type": "exit",
+                "market_id": pos.market_id,
+                "reason": reason,
+                "pnl_pct": pnl_pct,
+                "hours_held": hours_held,
+                "direction": pos.direction.value,
+            },
+        )
+
         console.print(
             f"[bold yellow]EXIT[/] {pos.direction.value} {pos.market_id[:20]} — {reason}"
         )

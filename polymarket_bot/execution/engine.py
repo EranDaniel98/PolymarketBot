@@ -63,6 +63,55 @@ class ExecutionEngine:
         slippage = abs(actual_price - target_price) / target_price
         return slippage <= self._config.max_slippage
 
+    async def check_order_book_depth(
+        self, token_id: str, side: str, amount: float,
+    ) -> tuple[bool, float]:
+        """Check if order book has sufficient liquidity for the desired trade size.
+
+        Returns (has_liquidity, recommended_size). If book is thin,
+        recommended_size will be reduced proportionally.
+        """
+        if not self._clob_client or self._config.paper_trading:
+            return True, amount  # Skip check in paper mode
+
+        try:
+            book = await asyncio.to_thread(
+                self._clob_client.get_order_book, token_id
+            )
+            # Get the relevant side of the book
+            # For BUY we look at asks, for SELL we look at bids
+            levels = book.get("asks" if side == "BUY" else "bids", [])
+            if not levels:
+                logger.warning("Empty order book for %s side=%s", token_id[:12], side)
+                return False, 0.0
+
+            # Sum available liquidity across first 5 levels
+            total_liquidity = 0.0
+            for level in levels[:5]:
+                try:
+                    price = float(level.get("price", 0))
+                    size = float(level.get("size", 0))
+                    total_liquidity += price * size
+                except (ValueError, TypeError):
+                    continue
+
+            if total_liquidity <= 0:
+                return False, 0.0
+
+            # If our order is more than 50% of available liquidity, reduce size
+            if amount > total_liquidity * 0.5:
+                recommended = total_liquidity * 0.5
+                logger.info(
+                    "Thin book for %s: $%.2f available, reducing order from $%.2f to $%.2f",
+                    token_id[:12], total_liquidity, amount, recommended,
+                )
+                return True, recommended
+
+            return True, amount
+        except Exception:
+            logger.debug("Order book depth check failed for %s", token_id[:12])
+            return True, amount  # On error, proceed with original size
+
     async def _get_best_price(self, token_id: str, side: str) -> float | None:
         if not self._clob_client:
             return None
@@ -131,6 +180,19 @@ class ExecutionEngine:
     async def execute(self, decision: TradeDecision, current_price: float) -> None:
         tokens = decision.tokens
         is_exit = decision.is_exit
+
+        # Order book depth check — reduce size if book is thin
+        if tokens and not is_exit:
+            token_id = tokens.get(decision.direction.value, tokens.get("YES", ""))
+            side = "BUY"
+            has_liquidity, recommended_size = await self.check_order_book_depth(
+                token_id, side, decision.amount,
+            )
+            if not has_liquidity:
+                logger.warning("Insufficient liquidity for %s — skipping", decision.market_id)
+                return
+            if recommended_size < decision.amount:
+                decision.amount = recommended_size
 
         if decision.order_type == OrderType.MARKET and tokens:
             token_id = tokens.get(decision.direction.value, tokens.get("YES", ""))
@@ -295,8 +357,11 @@ class ExecutionEngine:
                 logger.warning("Failed to cancel YES leg %s", yes_oid)
             return
 
-        # Monitor both legs — cancel unfilled after timeout
-        asyncio.create_task(self._monitor_arb_legs(yes_oid, no_oid, cancel_timeout))
+        # Monitor both legs — cancel unfilled after timeout, unwind partial fills
+        asyncio.create_task(self._monitor_arb_legs(
+            yes_oid, no_oid, cancel_timeout,
+            opportunity=opportunity, amount_per_side=amount_per_side,
+        ))
 
         for direction, price, order_id in [
             (Direction.YES, yes_price, yes_oid),
@@ -315,17 +380,103 @@ class ExecutionEngine:
 
     async def _monitor_arb_legs(
         self, yes_oid: str, no_oid: str, timeout: int,
+        opportunity: StructuralArbOpportunity | None = None,
+        amount_per_side: float = 0.0,
     ) -> None:
-        """Cancel unfilled arb legs after timeout."""
+        """Monitor both arb legs. If one fills but the other doesn't, unwind."""
         if self._config.paper_trading or not self._clob_client:
             return
-        await asyncio.sleep(timeout)
-        for oid in (yes_oid, no_oid):
+
+        check_interval = min(timeout // 6, 10)  # Check frequently
+        elapsed = 0
+
+        while elapsed < timeout:
+            await asyncio.sleep(check_interval)
+            elapsed += check_interval
+
             try:
-                order = await asyncio.to_thread(self._clob_client.get_order, oid)
-                status = order.get("status", "")
-                if status not in ("FILLED", "MATCHED"):
-                    await asyncio.to_thread(self._clob_client.cancel, oid)
-                    logger.info("Cancelled unfilled arb leg %s (status: %s)", oid[:12], status)
+                yes_order = await asyncio.to_thread(self._clob_client.get_order, yes_oid)
+                no_order = await asyncio.to_thread(self._clob_client.get_order, no_oid)
+
+                yes_status = yes_order.get("status", "")
+                no_status = no_order.get("status", "")
+
+                yes_filled = yes_status in ("FILLED", "MATCHED")
+                no_filled = no_status in ("FILLED", "MATCHED")
+
+                # Both filled — success
+                if yes_filled and no_filled:
+                    logger.info("Both arb legs filled: YES=%s NO=%s", yes_oid[:12], no_oid[:12])
+                    return
+
+                # Both cancelled/expired — nothing to do
+                if yes_status in ("CANCELLED", "EXPIRED") and no_status in ("CANCELLED", "EXPIRED"):
+                    return
+
             except Exception:
-                logger.debug("Failed to check/cancel arb leg %s", oid[:12])
+                logger.debug("Failed to check arb leg status")
+                continue
+
+        # Timeout reached — check final state and handle partial fills
+        try:
+            yes_order = await asyncio.to_thread(self._clob_client.get_order, yes_oid)
+            no_order = await asyncio.to_thread(self._clob_client.get_order, no_oid)
+
+            yes_status = yes_order.get("status", "")
+            no_status = no_order.get("status", "")
+            yes_filled = yes_status in ("FILLED", "MATCHED")
+            no_filled = no_status in ("FILLED", "MATCHED")
+
+            if yes_filled and no_filled:
+                return  # Both good
+
+            # Cancel any unfilled legs
+            if not yes_filled and yes_status not in ("CANCELLED", "EXPIRED"):
+                await asyncio.to_thread(self._clob_client.cancel, yes_oid)
+                logger.info("Cancelled unfilled YES arb leg %s", yes_oid[:12])
+
+            if not no_filled and no_status not in ("CANCELLED", "EXPIRED"):
+                await asyncio.to_thread(self._clob_client.cancel, no_oid)
+                logger.info("Cancelled unfilled NO arb leg %s", no_oid[:12])
+
+            # Partial fill protection: if one filled but not the other, unwind
+            if yes_filled and not no_filled and opportunity:
+                logger.warning("Partial fill: YES filled, NO didn't — unwinding YES leg")
+                await self._unwind_arb_leg(
+                    opportunity.tokens, Direction.YES, amount_per_side,
+                    opportunity.yes_price,
+                )
+            elif no_filled and not yes_filled and opportunity:
+                logger.warning("Partial fill: NO filled, YES didn't — unwinding NO leg")
+                await self._unwind_arb_leg(
+                    opportunity.tokens, Direction.NO, amount_per_side,
+                    opportunity.no_price,
+                )
+
+        except Exception:
+            logger.exception("Arb leg monitoring/unwind failed")
+
+    async def _unwind_arb_leg(
+        self, tokens: dict[str, str], direction: Direction,
+        amount: float, entry_price: float,
+    ) -> None:
+        """Sell back a filled arb leg that didn't get its pair."""
+        try:
+            order_id, fill_price, status = await self._place_order(
+                tokens, direction, amount, entry_price, OrderType.LIMIT, is_exit=True,
+            )
+            logger.info(
+                "Arb unwind: SELL %s @ $%.4f (order: %s, status: %s)",
+                direction.value, fill_price, order_id[:12], status.value,
+            )
+            execution = TradeExecution(
+                market_id="arb_unwind",
+                direction=direction,
+                amount=amount,
+                price=fill_price,
+                order_id=order_id,
+                status=status,
+            )
+            await self._db.save_trade(execution)
+        except Exception:
+            logger.exception("Failed to unwind arb leg %s", direction.value)

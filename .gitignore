@@ -9,3 +9,5 @@ config.yaml
 *.db
 .ruff_cache/
 .pytest_cache/
+logs/
+*.jsonl

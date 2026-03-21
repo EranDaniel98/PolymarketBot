@@ -80,6 +80,7 @@ class TradeDecision:
     order_type: OrderType
     tokens: dict[str, str] = field(default_factory=dict)
     question: str = ""
+    category: str = ""
     is_exit: bool = False
     arb_opportunity: ArbitrageOpportunity | None = None
 

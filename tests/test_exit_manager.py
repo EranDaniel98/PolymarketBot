@@ -127,3 +127,75 @@ async def test_load_from_db(manager, mock_db):
     assert "m1" in manager._positions
     assert manager._positions["m1"].entry_price == 0.45
     assert manager._positions["m1"].tokens == {"YES": "0xa", "NO": "0xb"}
+
+
+async def test_max_hold_time_losing_position(bus, mock_db):
+    """Losing positions held beyond max_hold_hours should trigger exit."""
+    rules = ExitRule(max_hold_hours=24, edge_gone_threshold=0.02, stop_loss=-0.15)
+    mgr = ExitManager(event_bus=bus, database=mock_db, rules=rules)
+
+    # Create a position held for 48 hours, currently at a small loss
+    # Price difference enough to avoid edge_gone (> 0.03 with time decay)
+    # but still negative PnL
+    pos = TrackedPosition(
+        market_id="m1", direction=Direction.YES,
+        entry_price=0.50, amount=100.0,
+        entry_time=datetime.now(timezone.utc) - timedelta(hours=48),
+    )
+    mgr._positions["m1"] = pos
+    # Price at 0.46 -> -8% loss (above stop_loss of -15%), edge_remaining=0.04 > threshold
+    mgr.set_price_getter(lambda platform, mid: 0.46)
+
+    reason = await mgr._check_exit(pos)
+    assert reason is not None
+    assert "Max hold time" in reason
+
+
+async def test_max_hold_time_winning_position_no_exit(bus, mock_db):
+    """Winning positions should NOT be force-exited even if held beyond max_hold_hours."""
+    rules = ExitRule(max_hold_hours=24, take_profit=0.50)
+    mgr = ExitManager(event_bus=bus, database=mock_db, rules=rules)
+
+    pos = TrackedPosition(
+        market_id="m1", direction=Direction.YES,
+        entry_price=0.50, amount=100.0,
+        entry_time=datetime.now(timezone.utc) - timedelta(hours=48),
+    )
+    mgr._positions["m1"] = pos
+    # Price at 0.55 -> +10% gain (below take_profit of 50%)
+    mgr.set_price_getter(lambda platform, mid: 0.55)
+
+    reason = await mgr._check_exit(pos)
+    # Should not trigger max hold time because position is in profit
+    assert reason is None or "Max hold" not in (reason or "")
+
+
+async def test_correlated_exposure(bus, mock_db):
+    """get_correlated_exposure should sum positions by category."""
+    rules = ExitRule()
+    mgr = ExitManager(event_bus=bus, database=mock_db, rules=rules)
+
+    await mgr.track_entry("m1", Direction.YES, 0.50, 100.0, category="politics")
+    await mgr.track_entry("m2", Direction.NO, 0.40, 200.0, category="politics")
+    await mgr.track_entry("m3", Direction.YES, 0.60, 150.0, category="crypto")
+
+    assert mgr.get_correlated_exposure("politics") == 300.0
+    assert mgr.get_correlated_exposure("crypto") == 150.0
+    assert mgr.get_correlated_exposure("sports") == 0.0
+
+
+async def test_trailing_stop_activation_threshold(bus, mock_db):
+    """Trailing stop should respect configurable activation threshold."""
+    rules = ExitRule(trailing_stop=0.08, trailing_stop_activation=0.03)
+    mgr = ExitManager(event_bus=bus, database=mock_db, rules=rules)
+
+    await mgr.track_entry("m1", Direction.YES, 0.40, 100.0)
+    pos = mgr._positions["m1"]
+    # Peak was only 4%, which is above 3% activation
+    pos.peak_pnl_pct = 0.04
+
+    # Current pnl at -5% (below trailing trigger of 0.04 - 0.08 = -0.04)
+    mgr.set_price_getter(lambda platform, mid: 0.38)
+    reason = await mgr._check_exit(pos)
+    assert reason is not None
+    assert "Trailing stop" in reason

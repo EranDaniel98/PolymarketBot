@@ -89,7 +89,13 @@ class SignalPoller:
             )
 
     async def _evaluate_loop(self) -> None:
-        """Periodically run all signal plugins against all markets."""
+        """Periodically run all signal plugins against all markets (parallel with semaphore)."""
+        semaphore = asyncio.Semaphore(10)
+
+        async def _eval(market, plugin):
+            async with semaphore:
+                await self._evaluate_loop_once(market, plugin)
+
         while self._running:
             if not self._markets or not self._plugins:
                 await asyncio.sleep(self._signal_interval)
@@ -100,12 +106,13 @@ class SignalPoller:
                 len(self._plugins), len(self._markets),
             )
 
-            for market in self._markets:
-                for plugin in self._plugins:
-                    await self._evaluate_loop_once(market, plugin)
-
-                # Small delay between markets to avoid rate limits
-                await asyncio.sleep(0.5)
+            tasks = [
+                _eval(m, p)
+                for m in self._markets
+                for p in self._plugins
+                if p.can_evaluate(m)
+            ]
+            await asyncio.gather(*tasks, return_exceptions=True)
 
             logger.info("Signal evaluation cycle complete")
             await asyncio.sleep(self._signal_interval)

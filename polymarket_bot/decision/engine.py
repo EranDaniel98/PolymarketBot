@@ -109,10 +109,20 @@ class DecisionEngine:
             return "notify"
         return "log_only"
 
+    def set_exit_manager(self, exit_manager) -> None:
+        """Set exit manager reference for open position checks."""
+        self._exit_manager = exit_manager
+
     async def on_signal(self, signal_event: SignalEvent) -> None:
         if self._risk.circuit_breaker_active:
             logger.warning("Circuit breaker active — ignoring signal")
             return
+
+        # Skip markets where we already hold a position
+        if hasattr(self, '_exit_manager') and self._exit_manager:
+            if signal_event.market.id in self._exit_manager._positions:
+                logger.debug("Already holding position in %s — skipping", signal_event.market.id)
+                return
 
         signal = signal_event.signal
         market = signal_event.market
@@ -159,12 +169,34 @@ class DecisionEngine:
             )
             action = "notify"
 
+        # Auto-approve mode: skip Telegram approval, execute all notify-level trades
+        if action == "notify" and self._thresholds.auto_approve_all:
+            logger.info("Auto-approve mode: promoting notify->auto_execute for %s", market.id)
+            action = "auto_execute"
+
         if action == "log_only":
             logger.info("Low confidence %.2f for %s — logging only", composite, market.id)
             return
 
         direction = self.determine_majority_direction(recent_signals)
         size = await self._risk.calculate_position_size(composite, market.current_price)
+
+        # Structured log for analytics
+        import logging as _logging
+        _slog = _logging.getLogger("polymarket_bot.structured")
+        _slog.info(
+            "Decision: %s %s $%.2f (%s)", direction.value, market.id[:16], size, action,
+            extra={
+                "event_type": "trade_decision",
+                "market_id": market.id,
+                "direction": direction.value,
+                "amount": size,
+                "confidence": composite,
+                "action": action,
+                "signals": [s.source for s in recent_signals],
+                "market_price": market.current_price,
+            },
+        )
 
         decision = TradeDecision(
             market_id=market.id,
@@ -175,12 +207,17 @@ class DecisionEngine:
             order_type=OrderType.LIMIT,
             tokens=market.tokens,
             question=market.question,
+            category=market.category or "",
         )
 
         approved, reason = await self._risk.check(decision, market.current_price)
         if not approved:
             logger.info("Risk rejected: %s", reason)
             return
+
+        # Save signal-to-trade linkage
+        trade_id = f"{market.id}_{direction.value}_{datetime.now(timezone.utc).isoformat()}"
+        await self._db.save_trade_signals(trade_id, recent_signals)
 
         if action == "auto_execute":
             await self._bus.publish("trade_decision", decision)

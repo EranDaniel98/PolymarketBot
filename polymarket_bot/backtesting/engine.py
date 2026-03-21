@@ -10,7 +10,6 @@ from rich.table import Table
 
 from polymarket_bot.backtesting.data_loader import HistoricalDataLoader
 from polymarket_bot.models import Market, Direction
-from polymarket_bot.signals.favorite_longshot import FavoriteLongshotSignal
 
 logger = logging.getLogger(__name__)
 console = Console()
@@ -112,6 +111,22 @@ class BacktestEngine:
         )
 
 
+async def build_offline_signals() -> list:
+    """Build all signal plugins that work without live API keys."""
+    from polymarket_bot.signals.favorite_longshot import FavoriteLongshotSignal
+    from polymarket_bot.signals.divergence import DivergenceSignal
+    from polymarket_bot.signals.weather import WeatherSignal
+
+    plugins = [
+        FavoriteLongshotSignal(),
+        DivergenceSignal(),
+        WeatherSignal(),
+    ]
+    for p in plugins:
+        await p.start()
+    return plugins
+
+
 def _print_results(result: BacktestResult) -> None:
     table = Table(title="Backtest Results", border_style="cyan")
     table.add_column("Metric", style="white")
@@ -188,8 +203,7 @@ async def run_backtest(days: int = 30, balance: float = 309.0) -> BacktestResult
     console.print(f"[green]Loaded {len(raw_markets)} resolved markets[/]")
 
     # Initialize signal plugins that don't need live APIs
-    flb = FavoriteLongshotSignal()
-    await flb.start()
+    plugins = await build_offline_signals()
 
     engine = BacktestEngine(starting_balance=balance)
 
@@ -202,12 +216,13 @@ async def run_backtest(days: int = 30, balance: float = 309.0) -> BacktestResult
         if not market:
             continue
 
-        # Evaluate FLB signal
+        # Evaluate all offline signals
         signals = []
-        if flb.can_evaluate(market):
-            sig = await flb.evaluate(market)
-            if sig:
-                signals.append(sig)
+        for plugin in plugins:
+            if plugin.can_evaluate(market):
+                sig = await plugin.evaluate(market)
+                if sig:
+                    signals.append(sig)
 
         # Execute best signal
         if signals:
@@ -219,7 +234,8 @@ async def run_backtest(days: int = 30, balance: float = 309.0) -> BacktestResult
                     best.direction.value, best.source,
                 )
 
-    await flb.stop()
+    for p in plugins:
+        await p.stop()
 
     result = engine.get_results()
     _print_results(result)

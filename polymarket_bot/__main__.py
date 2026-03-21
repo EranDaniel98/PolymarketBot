@@ -7,7 +7,7 @@ def main():
     parser = argparse.ArgumentParser(description="Polymarket Trading Bot")
     parser.add_argument(
         "command", nargs="?", default="run",
-        choices=["run", "backtest"],
+        choices=["run", "backtest", "analytics"],
         help="Command to execute (default: run)",
     )
     parser.add_argument(
@@ -28,6 +28,12 @@ def main():
         from polymarket_bot.backtesting.engine import run_backtest
         try:
             asyncio.run(run_backtest(days=args.days, balance=args.balance))
+        except KeyboardInterrupt:
+            sys.exit(0)
+    elif args.command == "analytics":
+        from polymarket_bot.analytics import run_analytics
+        try:
+            asyncio.run(run_analytics())
         except KeyboardInterrupt:
             sys.exit(0)
     else:

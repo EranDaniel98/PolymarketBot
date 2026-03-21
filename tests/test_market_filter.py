@@ -28,10 +28,17 @@ def _make_market_with_vol(price=0.5, days_out=15, category="politics", volume=10
 
 
 def test_filters_very_extreme_prices(mf):
-    """Prices at 0.01 and 0.99 should be filtered out."""
-    markets = [_make_market(price=0.01), _make_market(price=0.99)]
+    """Prices at 0.005 and 0.995 should be filtered out (below 0.01 / above 0.99)."""
+    markets = [_make_market(price=0.005), _make_market(price=0.995)]
     result = mf.filter_and_rank(markets)
     assert len(result) == 0
+
+
+def test_borderline_prices_pass(mf):
+    """Prices at 0.01 and 0.99 should pass through for FLB strategy."""
+    markets = [_make_market(price=0.01), _make_market(price=0.99)]
+    result = mf.filter_and_rank(markets)
+    assert len(result) == 2
 
 
 def test_filters_no_tokens(mf):

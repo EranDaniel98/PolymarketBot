@@ -63,6 +63,7 @@ class LLMSignalConfig:
     ensemble_enabled: bool = False
     aggregation: str = "trimmed_mean"
     ensemble_models: list[dict] | None = None
+    confidence_discount: float = 0.70
 
 
 @dataclass
@@ -141,6 +142,31 @@ class SignalsConfig:
 
 
 @dataclass
+class ExitConfig:
+    take_profit: float = 0.25
+    stop_loss: float = -0.10
+    trailing_stop: float = 0.08
+    edge_gone_threshold: float = 0.02
+    time_decay_hours: int = 24
+    trailing_stop_activation: float = 0.03
+    max_hold_hours: int = 168
+
+
+@dataclass
+class LoggingConfig:
+    file_enabled: bool = True
+    file_path: str = "logs/bot.jsonl"
+    max_size_mb: int = 50
+    backup_count: int = 5
+
+
+@dataclass
+class KellyTier:
+    max_confidence: float
+    fraction: float
+
+
+@dataclass
 class RiskConfig:
     max_position_pct: float = 0.05
     max_exposure_pct: float = 0.50
@@ -148,9 +174,13 @@ class RiskConfig:
     max_correlated_exposure_pct: float = 0.15
     min_edge: float = 0.03
     kelly_fraction: float = 0.5
+    kelly_tiers: list[KellyTier] | None = None
     bootstrap_trades: int = 50
     bootstrap_size_pct: float = 0.01
     cooldown_seconds: int = 300
+    recovery_hours: int = 2
+    recovery_sizing_pct: float = 0.50
+    min_trade_size: float = 10.0
 
 
 @dataclass
@@ -159,6 +189,7 @@ class ExecutionConfig:
     max_slippage: float = 0.01
     max_retries: int = 3
     paper_trading: bool = True
+    paper_balance: float = 300.0
 
 
 @dataclass
@@ -167,6 +198,7 @@ class TelegramConfig:
     bot_token: str = ""
     chat_id: str = ""
     approval_timeout: int = 300
+    auto_approve_window: int = 3600
 
 
 @dataclass
@@ -190,6 +222,7 @@ class ConfidenceThresholds:
     auto_execute: float = 0.8
     notify: float = 0.5
     min_signal_sources: int = 2
+    auto_approve_all: bool = False
 
 
 @dataclass
@@ -223,21 +256,25 @@ class BotConfig:
     polymarket: PolymarketConfig = None
     signals: SignalsConfig = None
     risk: RiskConfig = None
+    exit: ExitConfig = None
     execution: ExecutionConfig = None
     notifications: NotificationsConfig = None
     confidence_thresholds: ConfidenceThresholds = None
     arbitrage: ArbitrageConfig = None
     web: WebConfig = None
+    logging: LoggingConfig = None
 
     def __post_init__(self):
         self.polymarket = self.polymarket or PolymarketConfig()
         self.signals = self.signals or SignalsConfig()
         self.risk = self.risk or RiskConfig()
+        self.exit = self.exit or ExitConfig()
         self.execution = self.execution or ExecutionConfig()
         self.notifications = self.notifications or NotificationsConfig()
         self.confidence_thresholds = self.confidence_thresholds or ConfidenceThresholds()
         self.arbitrage = self.arbitrage or ArbitrageConfig()
         self.web = self.web or WebConfig()
+        self.logging = self.logging or LoggingConfig()
 
 
 def _dict_to_dataclass(cls, data: dict):

@@ -158,6 +158,7 @@ class LLMSignal(SignalPlugin):
         screening_model: str = "claude-haiku-4-5-20250514", newsapi_key: str = "",
         openai_api_key: str = "", ensemble_enabled: bool = False,
         ensemble_models: list[dict] | None = None, aggregation: str = "trimmed_mean",
+        confidence_discount: float = 1.0,
     ):
         self._api_key = api_key
         self._model = model
@@ -167,6 +168,7 @@ class LLMSignal(SignalPlugin):
         self._ensemble_enabled = ensemble_enabled
         self._ensemble_models = ensemble_models
         self._aggregation = aggregation
+        self._confidence_discount = confidence_discount
         self._client: anthropic.AsyncAnthropic | None = None
         self._http: httpx.AsyncClient | None = None
         self._backends: list[_ModelBackend] = []
@@ -303,7 +305,7 @@ class LLMSignal(SignalPlugin):
                 aggregated = _aggregate_trimmed_mean(parsed_results)
 
             probability = aggregated["probability"]
-            llm_confidence = aggregated["confidence"]
+            llm_confidence = aggregated["confidence"] * self._confidence_discount
             reasoning = aggregated["reasoning"]
 
             edge = probability - market.current_price
