@@ -3,7 +3,7 @@ from unittest.mock import AsyncMock, MagicMock
 from datetime import datetime, timedelta, timezone
 from polymarket_bot.decision.engine import DecisionEngine, _infer_category
 from polymarket_bot.config import ConfidenceThresholds, SignalsConfig
-from polymarket_bot.models import Signal, Direction, Market, SignalEvent, OrderType
+from polymarket_bot.models import Signal, Direction, Market, SignalEvent, SignalBatchEvent, OrderType
 from polymarket_bot.exit_manager import ExitManager, TrackedPosition
 
 
@@ -387,3 +387,108 @@ async def test_rotation_blocked_by_insufficient_edge(mock_bus, mock_db):
     candidate = risk.find_rotation_candidate(new_edge=0.08, price_getter=exit_mgr._price_getter)
     assert candidate is not None
     assert candidate[0] == "ok_market"
+
+
+# ---------------------------------------------------------------------------
+# on_signal_batch tests
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_on_signal_batch_multi_source_auto_executes(engine, market, mock_db, mock_bus):
+    """A batch with 3 high-weight signals agreeing should reach auto_execute threshold."""
+    # llm (0.25) + weather (0.20) + favorite_longshot (0.20) all at 0.90
+    # gives composite ~0.807, which clears the 0.8 auto_execute threshold.
+    signals = (
+        Signal(source="llm", market_id="m1", direction=Direction.YES,
+               confidence=0.90, reasoning="llm analysis", timestamp=datetime.now(timezone.utc)),
+        Signal(source="weather", market_id="m1", direction=Direction.YES,
+               confidence=0.90, reasoning="weather factor", timestamp=datetime.now(timezone.utc)),
+        Signal(source="favorite_longshot", market_id="m1", direction=Direction.YES,
+               confidence=0.90, reasoning="structural bias", timestamp=datetime.now(timezone.utc)),
+    )
+    batch = SignalBatchEvent(signals=signals, market=market)
+    mock_db.get_signals.return_value = []
+
+    await engine.on_signal_batch(batch)
+
+    calls = mock_bus.publish.call_args_list
+    topics = [c[0][0] for c in calls]
+    assert "trade_decision" in topics
+
+
+@pytest.mark.asyncio
+async def test_on_signal_batch_saves_all_signals(engine, market, mock_db):
+    """on_signal_batch must persist every signal in the batch to the database."""
+    signals = (
+        Signal(source="news", market_id="m1", direction=Direction.YES,
+               confidence=0.70, reasoning="news", timestamp=datetime.now(timezone.utc)),
+        Signal(source="social", market_id="m1", direction=Direction.YES,
+               confidence=0.65, reasoning="social", timestamp=datetime.now(timezone.utc)),
+    )
+    batch = SignalBatchEvent(signals=signals, market=market)
+    mock_db.get_signals.return_value = []
+
+    await engine.on_signal_batch(batch)
+
+    # save_signal should have been called once per signal in the batch
+    assert mock_db.save_signal.call_count == len(signals)
+    saved_sources = {call.args[0].source for call in mock_db.save_signal.call_args_list}
+    assert saved_sources == {"news", "social"}
+
+
+@pytest.mark.asyncio
+async def test_on_signal_batch_single_source_still_downgrades(engine, market, mock_db, mock_bus):
+    """A batch with only one source must be downgraded from auto_execute to notify."""
+    # Use a single very high-confidence signal — composite will pass auto_execute threshold
+    # but min_signal_sources gate must downgrade it to notify
+    signals = (
+        Signal(source="llm", market_id="m1", direction=Direction.YES,
+               confidence=0.95, reasoning="very confident", timestamp=datetime.now(timezone.utc)),
+    )
+    batch = SignalBatchEvent(signals=signals, market=market)
+    mock_db.get_signals.return_value = []
+
+    await engine.on_signal_batch(batch)
+
+    calls = mock_bus.publish.call_args_list
+    if calls:
+        topics = [c[0][0] for c in calls]
+        # Must NOT have gone to auto_execute (trade_decision)
+        assert "trade_decision" not in topics
+
+
+@pytest.mark.asyncio
+async def test_on_signal_batch_merges_with_prior_db_signals(engine, market, mock_db, mock_bus):
+    """Batch signals + prior DB signals from different sources are merged for aggregation.
+
+    The batch contains llm (weight=0.25, conf=0.99) and the DB contains a weather signal
+    (weight=0.20, conf=0.99) from a prior cycle.  Together they produce composite ~0.888,
+    clearing auto_execute (0.8) with 2 distinct sources.
+    """
+    # Batch has one high-weight source (llm)
+    batch_signals = (
+        Signal(source="llm", market_id="m1", direction=Direction.YES,
+               confidence=0.99, reasoning="llm very confident", timestamp=datetime.now(timezone.utc)),
+    )
+    batch = SignalBatchEvent(signals=batch_signals, market=market)
+
+    # DB has a prior signal from a different high-weight source (weather)
+    prior_timestamp = (datetime.now(timezone.utc) - timedelta(minutes=10)).isoformat()
+    mock_db.get_signals.return_value = [
+        {
+            "source": "weather",
+            "market_id": "m1",
+            "direction": "YES",
+            "confidence": 0.99,
+            "reasoning": "weather model",
+            "timestamp": prior_timestamp,
+        }
+    ]
+
+    await engine.on_signal_batch(batch)
+
+    # With 2 sources satisfying min_signal_sources and composite ≥ 0.8,
+    # the engine should auto_execute → trade_decision published.
+    calls = mock_bus.publish.call_args_list
+    topics = [c[0][0] for c in calls]
+    assert "trade_decision" in topics

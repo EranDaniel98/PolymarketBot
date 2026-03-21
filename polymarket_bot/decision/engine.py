@@ -8,7 +8,7 @@ from polymarket_bot.decision.risk import RiskManager
 from polymarket_bot.event_bus import EventBus
 from polymarket_bot.models import (
     ArbitrageOpportunity, Direction, Market, OrderType, Signal,
-    SignalEvent, TradeDecision,
+    SignalBatchEvent, SignalEvent, TradeDecision,
 )
 
 logger = logging.getLogger(__name__)
@@ -270,6 +270,14 @@ class DecisionEngine:
                 seen_sources[s.source] = s
         recent_signals = list(seen_sources.values())
 
+        await self._make_decision(market, recent_signals)
+
+    async def _make_decision(self, market: Market, recent_signals: list[Signal]) -> None:
+        """Core decision logic: aggregate signals, check risk, publish trade.
+
+        Called by both on_signal() and on_signal_batch() after their respective
+        signal-gathering and deduplication steps.
+        """
         composite = self.aggregate_signals(recent_signals)
         action = self.determine_action(composite)
 
@@ -384,6 +392,67 @@ class DecisionEngine:
             await self._bus.publish("trade_decision", decision)
         elif action == "notify":
             await self._bus.publish("approval_request", decision)
+
+    async def on_signal_batch(self, batch: SignalBatchEvent) -> None:
+        """Process a batch of signals from a single evaluation cycle for one market.
+
+        All signals are saved to DB first, then merged with prior-cycle DB signals
+        from other sources, deduplicated, and fed into _make_decision().
+        """
+        if self._risk.circuit_breaker_active:
+            logger.warning("Circuit breaker active — ignoring signal batch")
+            return
+
+        market = batch.market
+
+        # Skip markets where we already hold a position
+        if hasattr(self, '_exit_manager') and self._exit_manager:
+            if market.id in self._exit_manager._positions:
+                logger.debug("Already holding position in %s — skipping batch", market.id)
+                return
+
+        # Short-circuit when exposure is maxed and no rotation possible
+        exposure_pct = await self._exposure_ratio()
+        if exposure_pct >= self._risk._config.rotation_exposure_threshold:
+            if not (hasattr(self, '_exit_manager') and self._exit_manager
+                    and self._exit_manager._positions):
+                logger.debug("Exposure at %.0f%% with no positions to rotate — skipping batch %s",
+                             exposure_pct * 100, market.id)
+                return
+
+        # Persist every signal in the batch
+        for signal in batch.signals:
+            await self._db.save_signal(signal)
+
+        # Collect the batch signals as the authoritative set for their sources
+        batch_sources = {s.source for s in batch.signals}
+        all_signals: list[Signal] = list(batch.signals)
+
+        # Merge with prior-cycle DB signals from *other* sources to avoid duplicates
+        recent_rows = await self._db.get_signals(market.id)
+        for row in recent_rows:
+            if row["source"] in batch_sources:
+                continue  # already have fresher version from batch
+            try:
+                all_signals.append(Signal(
+                    source=row["source"],
+                    market_id=row["market_id"],
+                    direction=Direction(row["direction"]),
+                    confidence=row["confidence"],
+                    reasoning=row.get("reasoning", ""),
+                    timestamp=datetime.fromisoformat(row["timestamp"]),
+                ))
+            except (KeyError, ValueError):
+                continue
+
+        # Deduplicate by source — keep most recent per source
+        seen_sources: dict[str, Signal] = {}
+        for s in all_signals:
+            if s.source not in seen_sources or s.timestamp > seen_sources[s.source].timestamp:
+                seen_sources[s.source] = s
+        recent_signals = list(seen_sources.values())
+
+        await self._make_decision(market, recent_signals)
 
     async def on_arb_opportunity(self, arb: ArbitrageOpportunity) -> None:
         if self._risk.circuit_breaker_active:
