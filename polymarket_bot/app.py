@@ -224,7 +224,7 @@ async def run_bot(config_path: str = "config.yaml"):
     decision_engine.set_exit_manager(exit_mgr)
     decision_engine.set_market_cache(market_cache)
     exit_mgr.set_price_getter(monitor.get_cached_price)
-    exit_mgr.set_on_exit_callback(risk_manager.record_exit)
+    # Cooldown is now armed in on_trade_execution after confirmed fill
 
     # Load persisted positions from DB
     await exit_mgr.load_from_db()
@@ -278,8 +278,12 @@ async def run_bot(config_path: str = "config.yaml"):
         print_trade_execution(execution.market_id, execution.direction.value,
                              execution.amount, execution.price,
                              question=exec_question)
-        # Track new entries for exit management (skip for exits)
-        if not execution.is_exit:
+        if execution.is_exit:
+            # Confirmed exit fill — now safe to remove position and arm cooldown
+            await exit_mgr.track_exit(execution.market_id)
+            risk_manager.record_exit(execution.market_id)
+        else:
+            # Track new entries for exit management
             tokens = cached_market.tokens if cached_market else {}
             end_date = cached_market.end_date if cached_market else None
             category = cached_market.category if cached_market else ""

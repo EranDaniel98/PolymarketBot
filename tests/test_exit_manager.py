@@ -208,12 +208,10 @@ async def test_load_from_db_restores_end_date_and_category(bus, mock_db):
     assert pos.category == "politics"
 
 
-async def test_trigger_exit_calls_cooldown_callback(bus, mock_db):
-    """_trigger_exit must invoke the on_exit_callback so cooldown is armed."""
-    callback_calls = []
+async def test_trigger_exit_marks_pending(bus, mock_db):
+    """_trigger_exit must mark market as pending so monitor skips it."""
     rules = ExitRule()
     mgr = ExitManager(event_bus=bus, database=mock_db, rules=rules)
-    mgr.set_on_exit_callback(lambda mid: callback_calls.append(mid))
 
     pos = TrackedPosition(
         market_id="m1", direction=Direction.YES,
@@ -222,7 +220,27 @@ async def test_trigger_exit_calls_cooldown_callback(bus, mock_db):
     )
     mgr._positions["m1"] = pos
     await mgr._trigger_exit(pos, "Test exit")
-    assert callback_calls == ["m1"]
+    # Position stays in _positions (not removed until confirmed fill)
+    assert "m1" in mgr._positions
+    # But marked as pending exit so monitor loop skips it
+    assert "m1" in mgr._pending_exits
+
+
+async def test_track_exit_clears_pending(bus, mock_db):
+    """track_exit must clear the pending flag and remove position."""
+    rules = ExitRule()
+    mgr = ExitManager(event_bus=bus, database=mock_db, rules=rules)
+
+    pos = TrackedPosition(
+        market_id="m1", direction=Direction.YES,
+        entry_price=0.40, amount=100.0,
+        entry_time=datetime.now(timezone.utc),
+    )
+    mgr._positions["m1"] = pos
+    mgr._pending_exits.add("m1")
+    await mgr.track_exit("m1")
+    assert "m1" not in mgr._positions
+    assert "m1" not in mgr._pending_exits
 
 
 async def test_trailing_stop_activation_threshold(bus, mock_db):

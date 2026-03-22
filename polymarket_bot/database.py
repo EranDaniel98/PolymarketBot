@@ -113,6 +113,7 @@ MIGRATIONS = [
     "ALTER TABLE portfolio ADD COLUMN tokens TEXT DEFAULT '{}'",
     "ALTER TABLE portfolio ADD COLUMN end_date TEXT",
     "ALTER TABLE portfolio ADD COLUMN category TEXT DEFAULT ''",
+    "ALTER TABLE trades ADD COLUMN is_exit INTEGER DEFAULT 0",
 ]
 
 
@@ -183,11 +184,11 @@ class Database:
 
     async def save_trade(self, trade: TradeExecution) -> None:
         await self._write(
-            "INSERT INTO trades (market_id, direction, amount, price, order_id, status, fees, realized_pnl, error, timestamp) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO trades (market_id, direction, amount, price, order_id, status, fees, realized_pnl, error, timestamp, is_exit) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (trade.market_id, trade.direction.value, trade.amount, trade.price,
              trade.order_id, trade.status.value, trade.fees, trade.realized_pnl,
-             trade.error, trade.timestamp.isoformat()),
+             trade.error, trade.timestamp.isoformat(), int(trade.is_exit)),
         )
 
     async def get_trades(self, market_id: str | None = None) -> list[dict]:
@@ -444,13 +445,13 @@ class Database:
         }
 
     async def get_untracked_trades(self) -> list[dict]:
-        """Find filled BUY trades with no matching portfolio entry."""
+        """Find filled entry trades with no matching portfolio entry."""
         return await self._fetch_all(
             "SELECT t.market_id, t.direction, t.amount, t.price, t.timestamp "
             "FROM trades t "
             "LEFT JOIN portfolio p ON t.market_id = p.market_id "
             "WHERE t.status = 'filled' AND p.market_id IS NULL "
-            "AND t.order_id NOT LIKE '%_exit_%' "
+            "AND COALESCE(t.is_exit, 0) = 0 "
             "ORDER BY t.timestamp DESC"
         )
 

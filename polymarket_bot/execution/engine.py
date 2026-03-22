@@ -288,12 +288,26 @@ class ExecutionEngine:
                     logger.warning("Reprice slippage too high: %.4f -> %.4f", original_price, new_price)
                     return
 
-                new_oid, _, new_status = await self._place_order(
+                new_oid, fill_price, new_status = await self._place_order(
                     decision.tokens, decision.direction, decision.amount,
                     new_price, OrderType.LIMIT, decision.is_exit,
                 )
                 order_id = new_oid
                 logger.info("Order repriced (attempt %d): %s @ %.4f", attempt + 1, new_oid[:12], new_price)
+
+                # Record the repriced order so it's tracked
+                if new_status in (OrderStatus.FILLED, OrderStatus.PLACED):
+                    execution = TradeExecution(
+                        market_id=decision.market_id,
+                        direction=decision.direction,
+                        amount=decision.amount,
+                        price=fill_price,
+                        order_id=new_oid,
+                        status=new_status,
+                        is_exit=decision.is_exit,
+                    )
+                    await self._db.save_trade(execution)
+                    await self._bus.publish("trade_execution", execution)
             except Exception:
                 logger.debug("Reprice attempt %d failed", attempt + 1)
                 return

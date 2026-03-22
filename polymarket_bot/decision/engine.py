@@ -203,10 +203,8 @@ class DecisionEngine:
             is_exit=True,
         )
         await self._bus.publish("trade_decision", exit_decision)
-        await self._exit_manager.track_exit(pos.market_id)
-        self._risk.record_exit(pos.market_id)
-
-        # Now publish the new trade
+        # NOTE: track_exit + record_exit happen in on_trade_execution after confirmed fill.
+        # Only publish the new entry after the exit decision is dispatched.
         await self._bus.publish("trade_decision", new_decision)
         return True
 

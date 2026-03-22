@@ -51,6 +51,7 @@ class ExitManager:
         self._rules = rules or ExitRule()
         self._check_interval = check_interval
         self._positions: dict[str, TrackedPosition] = {}
+        self._pending_exits: set[str] = set()  # Markets with exit in-flight
         self._running = False
         self._task: asyncio.Task | None = None
         self._price_getter = None  # Set by app.py to monitor.get_cached_price
@@ -89,6 +90,7 @@ class ExitManager:
 
     async def track_exit(self, market_id: str) -> None:
         self._positions.pop(market_id, None)
+        self._pending_exits.discard(market_id)
         await self._db.delete_position(market_id)
 
     def get_correlated_exposure(self, category: str) -> float:
@@ -135,6 +137,8 @@ class ExitManager:
     async def _monitor_loop(self) -> None:
         while self._running:
             for market_id, pos in list(self._positions.items()):
+                if market_id in self._pending_exits:
+                    continue  # Exit already in-flight, wait for execution
                 old_peak = pos.peak_pnl_pct
                 exit_reason = await self._check_exit(pos)
                 if exit_reason:
@@ -260,8 +264,8 @@ class ExitManager:
             is_exit=True,
         )
 
+        self._pending_exits.add(pos.market_id)
         await self._bus.publish("trade_decision", decision)
-        await self.track_exit(pos.market_id)
-        if self._on_exit_callback:
-            self._on_exit_callback(pos.market_id)
+        # NOTE: track_exit is called from on_trade_execution after confirmed fill,
+        # not here — if execution fails, the position stays tracked for retry.
         logger.info("Exit triggered for %s: %s", pos.market_id, reason)
