@@ -96,6 +96,34 @@ async def test_execute_with_is_exit(engine, mock_bus, mock_db):
         assert call_kwargs[0][5] is True or call_kwargs[1].get("is_exit") is True
 
 
+async def test_execute_exit_propagates_is_exit_to_execution(engine, mock_bus, mock_db):
+    """TradeExecution published for exit trades must carry is_exit=True."""
+    decision = TradeDecision(
+        market_id="m1", direction=Direction.YES, amount=100.0,
+        confidence=0.99, signals=[], order_type=OrderType.LIMIT,
+        tokens={"YES": "0xa", "NO": "0xb"}, is_exit=True,
+    )
+    with patch.object(engine, "_place_order", new_callable=AsyncMock,
+                     return_value=("ord789", 0.55, OrderStatus.FILLED)):
+        await engine.execute(decision, current_price=0.55)
+        published = mock_bus.publish.call_args[0][1]
+        assert published.is_exit is True
+
+
+async def test_execute_entry_has_is_exit_false(engine, mock_bus, mock_db):
+    """TradeExecution published for normal entries must have is_exit=False."""
+    decision = TradeDecision(
+        market_id="m1", direction=Direction.YES, amount=100.0,
+        confidence=0.85, signals=[], order_type=OrderType.LIMIT,
+        tokens={"YES": "0xa", "NO": "0xb"},
+    )
+    with patch.object(engine, "_place_order", new_callable=AsyncMock,
+                     return_value=("ord123", 0.50, OrderStatus.FILLED)):
+        await engine.execute(decision, current_price=0.50)
+        published = mock_bus.publish.call_args[0][1]
+        assert published.is_exit is False
+
+
 async def test_order_book_depth_paper_mode(mock_db, mock_bus):
     """Paper mode should skip depth check and return original amount."""
     config = ExecutionConfig(paper_trading=True)

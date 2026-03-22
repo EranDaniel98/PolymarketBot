@@ -111,6 +111,8 @@ MIGRATIONS = [
     # Add peak_pnl_pct and tokens columns if missing (idempotent)
     "ALTER TABLE portfolio ADD COLUMN peak_pnl_pct REAL DEFAULT 0.0",
     "ALTER TABLE portfolio ADD COLUMN tokens TEXT DEFAULT '{}'",
+    "ALTER TABLE portfolio ADD COLUMN end_date TEXT",
+    "ALTER TABLE portfolio ADD COLUMN category TEXT DEFAULT ''",
 ]
 
 
@@ -247,13 +249,16 @@ class Database:
 
     async def save_position(self, market_id: str, direction: str, amount: float,
                             entry_price: float, peak_pnl_pct: float = 0.0,
-                            tokens: str = "{}") -> None:
+                            tokens: str = "{}",
+                            end_date: str | None = None,
+                            category: str = "") -> None:
         await self._write(
             "INSERT OR REPLACE INTO portfolio "
-            "(market_id, direction, amount, entry_price, peak_pnl_pct, tokens, updated_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            "(market_id, direction, amount, entry_price, peak_pnl_pct, tokens, "
+            "end_date, category, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (market_id, direction, amount, entry_price, peak_pnl_pct, tokens,
-             datetime.now(timezone.utc).isoformat()),
+             end_date, category, datetime.now(timezone.utc).isoformat()),
         )
 
     async def load_positions(self) -> list[dict]:

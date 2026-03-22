@@ -3,7 +3,7 @@ import json
 import logging
 import re
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import anthropic
 import httpx
@@ -172,13 +172,43 @@ class LLMSignal(SignalPlugin):
         self._client: anthropic.AsyncAnthropic | None = None
         self._http: httpx.AsyncClient | None = None
         self._backends: list[_ModelBackend] = []
+        self._consecutive_failures: int = 0
+        self._circuit_open_until: datetime | None = None
+
+    def _check_circuit(self) -> bool:
+        """Return True if circuit is open (should skip evaluation)."""
+        if self._circuit_open_until is None:
+            return False
+        if datetime.now(timezone.utc) >= self._circuit_open_until:
+            self._circuit_open_until = None
+            self._consecutive_failures = 0
+            logger.info("LLM circuit breaker reset — retrying")
+            return False
+        return True
+
+    def _trip_circuit(self) -> None:
+        """Arm circuit breaker with exponential backoff."""
+        self._consecutive_failures += 1
+        backoff_minutes = min(5 * (2 ** (self._consecutive_failures - 1)), 60)
+        self._circuit_open_until = datetime.now(timezone.utc) + timedelta(minutes=backoff_minutes)
+        logger.warning(
+            "LLM circuit breaker tripped: %d consecutive failures, backing off %d min",
+            self._consecutive_failures, backoff_minutes,
+        )
+
+    def _reset_circuit(self) -> None:
+        """Reset circuit breaker on success."""
+        if self._consecutive_failures > 0:
+            logger.info("LLM circuit breaker reset after %d failures", self._consecutive_failures)
+        self._consecutive_failures = 0
+        self._circuit_open_until = None
 
     @property
     def name(self) -> str:
         return "llm"
 
     async def start(self) -> None:
-        self._client = anthropic.AsyncAnthropic(api_key=self._api_key)
+        self._client = anthropic.AsyncAnthropic(api_key=self._api_key, max_retries=0)
         self._http = httpx.AsyncClient(
             timeout=15,
             headers={"User-Agent": "PolymarketBot/0.1"},
@@ -190,10 +220,10 @@ class LLMSignal(SignalPlugin):
                 model_id = spec.get("model", self._model)
                 weight = spec.get("weight", 1.0)
                 if provider == "anthropic":
-                    client = anthropic.AsyncAnthropic(api_key=self._api_key)
+                    client = anthropic.AsyncAnthropic(api_key=self._api_key, max_retries=0)
                 elif provider == "openai":
                     from openai import AsyncOpenAI
-                    client = AsyncOpenAI(api_key=self._openai_api_key)
+                    client = AsyncOpenAI(api_key=self._openai_api_key, max_retries=0)
                 else:
                     logger.warning("Unknown provider %s, skipping", provider)
                     continue
@@ -235,11 +265,13 @@ class LLMSignal(SignalPlugin):
             text = response.content[0].text.strip().upper()
             return text.startswith("YES") or text.startswith("MAYBE")
         except Exception:
-            logger.debug("LLM screening failed, defaulting to analyze")
-            return True  # On error, proceed with analysis
+            logger.debug("LLM screening failed, skipping market")
+            return False  # On error, skip — don't send to expensive ensemble
 
     async def evaluate(self, market: Market) -> Signal | None:
         if not self._client:
+            return None
+        if self._check_circuit():
             return None
 
         try:
@@ -296,7 +328,10 @@ class LLMSignal(SignalPlugin):
 
             if not parsed_results:
                 logger.warning("All LLM backends failed for %s", market.id)
+                self._trip_circuit()
                 return None
+
+            self._reset_circuit()
 
             # Aggregate results
             if self._aggregation == "weighted_average":

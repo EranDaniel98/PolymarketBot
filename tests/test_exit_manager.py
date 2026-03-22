@@ -184,6 +184,47 @@ async def test_correlated_exposure(bus, mock_db):
     assert mgr.get_correlated_exposure("sports") == 0.0
 
 
+async def test_load_from_db_restores_end_date_and_category(bus, mock_db):
+    """load_from_db must restore end_date and category from the database."""
+    mock_db.load_positions.return_value = [
+        {
+            "market_id": "m1",
+            "direction": "YES",
+            "entry_price": 0.45,
+            "amount": 50.0,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+            "peak_pnl_pct": 0.05,
+            "tokens": '{"YES": "0xa"}',
+            "end_date": "2026-12-31T00:00:00+00:00",
+            "category": "politics",
+        }
+    ]
+    rules = ExitRule()
+    mgr = ExitManager(event_bus=bus, database=mock_db, rules=rules)
+    await mgr.load_from_db()
+    pos = mgr._positions["m1"]
+    assert pos.end_date is not None
+    assert pos.end_date.year == 2026
+    assert pos.category == "politics"
+
+
+async def test_trigger_exit_calls_cooldown_callback(bus, mock_db):
+    """_trigger_exit must invoke the on_exit_callback so cooldown is armed."""
+    callback_calls = []
+    rules = ExitRule()
+    mgr = ExitManager(event_bus=bus, database=mock_db, rules=rules)
+    mgr.set_on_exit_callback(lambda mid: callback_calls.append(mid))
+
+    pos = TrackedPosition(
+        market_id="m1", direction=Direction.YES,
+        entry_price=0.40, amount=100.0,
+        entry_time=datetime.now(timezone.utc),
+    )
+    mgr._positions["m1"] = pos
+    await mgr._trigger_exit(pos, "Test exit")
+    assert callback_calls == ["m1"]
+
+
 async def test_trailing_stop_activation_threshold(bus, mock_db):
     """Trailing stop should respect configurable activation threshold."""
     rules = ExitRule(trailing_stop=0.08, trailing_stop_activation=0.03)

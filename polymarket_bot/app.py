@@ -224,6 +224,7 @@ async def run_bot(config_path: str = "config.yaml"):
     decision_engine.set_exit_manager(exit_mgr)
     decision_engine.set_market_cache(market_cache)
     exit_mgr.set_price_getter(monitor.get_cached_price)
+    exit_mgr.set_on_exit_callback(risk_manager.record_exit)
 
     # Load persisted positions from DB
     await exit_mgr.load_from_db()
@@ -277,17 +278,18 @@ async def run_bot(config_path: str = "config.yaml"):
         print_trade_execution(execution.market_id, execution.direction.value,
                              execution.amount, execution.price,
                              question=exec_question)
-        # Track new entries for exit management
-        tokens = cached_market.tokens if cached_market else {}
-        end_date = cached_market.end_date if cached_market else None
-        category = cached_market.category if cached_market else ""
-        await exit_mgr.track_entry(
-            execution.market_id, execution.direction,
-            execution.price, execution.amount,
-            tokens=tokens,
-            end_date=end_date,
-            category=category or "",
-        )
+        # Track new entries for exit management (skip for exits)
+        if not execution.is_exit:
+            tokens = cached_market.tokens if cached_market else {}
+            end_date = cached_market.end_date if cached_market else None
+            category = cached_market.category if cached_market else ""
+            await exit_mgr.track_entry(
+                execution.market_id, execution.direction,
+                execution.price, execution.amount,
+                tokens=tokens,
+                end_date=end_date,
+                category=category or "",
+            )
         new_balance = await exec_engine.get_balance()
         if new_balance and new_balance > 0:
             bankroll = new_balance

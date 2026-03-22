@@ -97,6 +97,17 @@ async def test_save_position_upsert(db):
     assert positions[0]["amount"] == 75.0
 
 
+async def test_save_position_with_end_date_and_category(db):
+    await db.save_position(
+        "m1", "YES", 100.0, 0.50,
+        end_date="2026-12-31T00:00:00+00:00", category="politics",
+    )
+    rows = await db.load_positions()
+    assert len(rows) == 1
+    assert rows[0]["end_date"] == "2026-12-31T00:00:00+00:00"
+    assert rows[0]["category"] == "politics"
+
+
 # --- Daily report query tests ---
 
 async def test_get_total_pnl_empty(db):

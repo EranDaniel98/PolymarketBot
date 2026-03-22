@@ -104,3 +104,4 @@ class TradeExecution:
     fees: float = 0.0
     realized_pnl: float = 0.0
     error: str | None = None
+    is_exit: bool = False

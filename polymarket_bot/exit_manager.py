@@ -54,10 +54,15 @@ class ExitManager:
         self._running = False
         self._task: asyncio.Task | None = None
         self._price_getter = None  # Set by app.py to monitor.get_cached_price
+        self._on_exit_callback = None  # Called with market_id on every exit
 
     def set_price_getter(self, fn) -> None:
         """Set function to get current price: fn(platform, market_id) -> float | None"""
         self._price_getter = fn
+
+    def set_on_exit_callback(self, fn) -> None:
+        """Set callback invoked on every exit: fn(market_id) -> None"""
+        self._on_exit_callback = fn
 
     async def track_entry(self, market_id: str, direction: Direction,
                           entry_price: float, amount: float,
@@ -77,6 +82,8 @@ class ExitManager:
         await self._db.save_position(
             market_id, direction.value, amount, entry_price,
             tokens=json.dumps(tokens or {}),
+            end_date=end_date.isoformat() if end_date else None,
+            category=category,
         )
         logger.info("Tracking position: %s %s @ %.4f", direction.value, market_id, entry_price)
 
@@ -96,6 +103,13 @@ class ExitManager:
     async def load_from_db(self) -> None:
         rows = await self._db.load_positions()
         for row in rows:
+            end_date = None
+            raw_end = row.get("end_date")
+            if raw_end:
+                try:
+                    end_date = datetime.fromisoformat(raw_end)
+                except ValueError:
+                    pass
             self._positions[row["market_id"]] = TrackedPosition(
                 market_id=row["market_id"],
                 direction=Direction(row["direction"]),
@@ -104,6 +118,8 @@ class ExitManager:
                 entry_time=datetime.fromisoformat(row["updated_at"]),
                 peak_pnl_pct=row.get("peak_pnl_pct", 0.0),
                 tokens=json.loads(row.get("tokens", "{}")),
+                end_date=end_date,
+                category=row.get("category", ""),
             )
         logger.info("Loaded %d positions from DB", len(self._positions))
 
@@ -246,4 +262,6 @@ class ExitManager:
 
         await self._bus.publish("trade_decision", decision)
         await self.track_exit(pos.market_id)
+        if self._on_exit_callback:
+            self._on_exit_callback(pos.market_id)
         logger.info("Exit triggered for %s: %s", pos.market_id, reason)

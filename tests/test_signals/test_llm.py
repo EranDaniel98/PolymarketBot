@@ -96,6 +96,14 @@ async def test_screening_filters_uninteresting_markets(llm_signal, market):
             mock_client.messages.create.assert_not_called()
 
 
+async def test_screening_failure_skips_market(llm_signal, market):
+    """When screening raises an exception, market should be SKIPPED (not analyzed)."""
+    llm_signal._client = MagicMock()
+    llm_signal._client.messages.create = AsyncMock(side_effect=Exception("API down"))
+    result = await llm_signal._quick_screen(market)
+    assert result is False
+
+
 async def test_screening_passes_interesting_markets(llm_signal, market):
     """When Haiku says YES, full analysis with Opus runs."""
     llm_signal._client = MagicMock()
@@ -274,3 +282,62 @@ def test_aggregate_weighted():
     agg = _aggregate_weighted(results, [0.4, 0.6])
     expected_prob = (0.60 * 0.4 + 0.80 * 0.6) / 1.0
     assert agg["probability"] == pytest.approx(expected_prob)
+
+
+async def test_circuit_breaker_trips_on_all_fail(llm_signal, market):
+    """After all backends fail, circuit should open and block next evaluate."""
+    llm_signal._client = MagicMock()
+    backend = MagicMock(spec=_ModelBackend)
+    backend.query = AsyncMock(side_effect=Exception("quota exceeded"))
+    backend.provider = "anthropic"
+    backend.model = "test"
+    backend.weight = 1.0
+    llm_signal._backends = [backend]
+
+    with patch.object(llm_signal, "_quick_screen", new_callable=AsyncMock, return_value=True):
+        with patch.object(llm_signal, "_gather_news", new_callable=AsyncMock, return_value=""):
+            with patch.object(llm_signal, "_gather_reddit", new_callable=AsyncMock, return_value=""):
+                with patch.object(llm_signal, "_gather_odds", new_callable=AsyncMock, return_value=""):
+                    with patch.object(llm_signal, "_gather_polymarket_context", new_callable=AsyncMock, return_value=""):
+                        with patch.object(llm_signal, "_gather_related_markets", new_callable=AsyncMock, return_value=""):
+                            with patch.object(llm_signal, "_gather_metaculus", new_callable=AsyncMock, return_value=""):
+                                with patch.object(llm_signal, "_gather_wikipedia", new_callable=AsyncMock, return_value=""):
+                                    # First call trips the circuit
+                                    result = await llm_signal.evaluate(market)
+                                    assert result is None
+                                    assert llm_signal._consecutive_failures == 1
+                                    assert llm_signal._circuit_open_until is not None
+
+                                    # Second call is blocked by circuit — backend not called
+                                    backend.query.reset_mock()
+                                    result = await llm_signal.evaluate(market)
+                                    assert result is None
+                                    backend.query.assert_not_called()
+
+
+async def test_circuit_breaker_resets_on_success(llm_signal, market):
+    """A successful evaluation should reset the circuit breaker."""
+    llm_signal._client = MagicMock()
+    llm_signal._consecutive_failures = 3
+    llm_signal._circuit_open_until = None  # Expired
+
+    backend = MagicMock(spec=_ModelBackend)
+    backend.query = AsyncMock(return_value='{"probability": 0.65, "confidence": 0.7, "reasoning": "OK"}')
+    backend.provider = "anthropic"
+    backend.model = "test"
+    backend.weight = 1.0
+    llm_signal._backends = [backend]
+
+    with patch.object(llm_signal, "_quick_screen", new_callable=AsyncMock, return_value=True):
+        with patch.object(llm_signal, "_gather_news", new_callable=AsyncMock, return_value=""):
+            with patch.object(llm_signal, "_gather_reddit", new_callable=AsyncMock, return_value=""):
+                with patch.object(llm_signal, "_gather_odds", new_callable=AsyncMock, return_value=""):
+                    with patch.object(llm_signal, "_gather_polymarket_context", new_callable=AsyncMock, return_value=""):
+                        with patch.object(llm_signal, "_gather_related_markets", new_callable=AsyncMock, return_value=""):
+                            with patch.object(llm_signal, "_gather_metaculus", new_callable=AsyncMock, return_value=""):
+                                with patch.object(llm_signal, "_gather_wikipedia", new_callable=AsyncMock, return_value=""):
+                                    result = await llm_signal.evaluate(market)
+                                    # Should produce a signal (edge = 0.65 - 0.35 = 0.30)
+                                    assert result is not None
+                                    assert llm_signal._consecutive_failures == 0
+                                    assert llm_signal._circuit_open_until is None

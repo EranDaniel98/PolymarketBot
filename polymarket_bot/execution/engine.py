@@ -220,6 +220,7 @@ class ExecutionEngine:
                     price=fill_price,
                     order_id=order_id,
                     status=status,
+                    is_exit=decision.is_exit,
                 )
 
                 await self._db.save_trade(execution)
@@ -251,6 +252,7 @@ class ExecutionEngine:
             order_id="",
             status=OrderStatus.FAILED,
             error=last_error,
+            is_exit=decision.is_exit,
         )
         await self._db.save_trade(execution)
         logger.error("Trade failed after %d attempts: %s", self._config.max_retries, last_error)
