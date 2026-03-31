@@ -205,6 +205,14 @@ class RiskConfig:
     rotation_min_hold_minutes: int = 30    # Don't rotate positions held less than this
     rotation_exposure_threshold: float = 0.95  # Trigger rotation when exposure >= 95% of limit
 
+    def __post_init__(self):
+        # Convert kelly_tiers from list[dict] (YAML) to list[KellyTier]
+        if self.kelly_tiers:
+            self.kelly_tiers = [
+                KellyTier(**t) if isinstance(t, dict) else t
+                for t in self.kelly_tiers
+            ]
+
 
 @dataclass
 class ExecutionConfig:
