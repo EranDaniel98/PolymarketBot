@@ -130,13 +130,19 @@ class PriceMonitor:
                         for data in events:
                             token_id = str(data.get("asset_id", data.get("market", "")))
                             price = data.get("price", data.get("last_trade_price"))
-                            if token_id and price is not None:
-                                store_id = self._token_to_market.get(token_id, token_id)
-                                self._update_price("polymarket", store_id, float(price))
+                            if token_id and price is not None and price != "":
+                                try:
+                                    self._update_price(
+                                        "polymarket",
+                                        self._token_to_market.get(token_id, token_id),
+                                        float(price),
+                                    )
+                                except (ValueError, TypeError):
+                                    pass
             except asyncio.CancelledError:
                 return
-            except Exception:
-                logger.exception("Polymarket WS connection error — reconnecting in 5s")
+            except Exception as e:
+                logger.error("Polymarket WS error: %s: %s", type(e).__name__, str(e)[:200])
                 await asyncio.sleep(5)
 
     async def _poll_external_platforms(self) -> None:
