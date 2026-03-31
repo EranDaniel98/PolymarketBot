@@ -96,30 +96,43 @@ class PriceMonitor:
 
     async def _subscribe_polymarket(self) -> None:
         while self._running:
-            # Refresh IDs on each reconnect to pick up newly subscribed markets
-            all_ids = list(set(self._mapper.all_polymarket_ids() + self._subscribed_ids))
-            if not all_ids:
-                logger.info("No market IDs to subscribe — waiting for markets")
+            # Collect all token IDs (not condition IDs) for subscription
+            all_token_ids = list(self._token_to_market.keys())
+            if not all_token_ids:
+                logger.info("No token IDs to subscribe — waiting for markets")
                 await asyncio.sleep(5)
                 continue
             try:
                 async with websockets.connect(POLYMARKET_WS) as ws:
-                    for mid in all_ids:
-                        await ws.send(json.dumps({
-                            "type": "subscribe",
-                            "market": mid,
-                        }))
+                    # Polymarket WS expects: {"type": "market", "assets_ids": [...]}
+                    await ws.send(json.dumps({
+                        "type": "market",
+                        "assets_ids": all_token_ids,
+                        "custom_feature_enabled": True,
+                    }))
+                    logger.info("Polymarket WS subscribed to %d token feeds", len(all_token_ids))
 
                     async for message in ws:
                         if not self._running:
                             break
-                        data = json.loads(message)
-                        token_id = data.get("market")
-                        price = data.get("price")
-                        if token_id and price is not None:
-                            # Map token_id to condition_id if known
-                            store_id = self._token_to_market.get(token_id, token_id)
-                            self._update_price("polymarket", store_id, float(price))
+                        message = message.strip()
+                        if not message or message == "[]":
+                            continue  # Initial ack or empty update
+                        try:
+                            events = json.loads(message)
+                        except json.JSONDecodeError:
+                            continue
+                        # Response can be a single event dict or a list of events
+                        if isinstance(events, dict):
+                            events = [events]
+                        if not isinstance(events, list):
+                            continue
+                        for data in events:
+                            token_id = str(data.get("asset_id", data.get("market", "")))
+                            price = data.get("price", data.get("last_trade_price"))
+                            if token_id and price is not None:
+                                store_id = self._token_to_market.get(token_id, token_id)
+                                self._update_price("polymarket", store_id, float(price))
             except asyncio.CancelledError:
                 return
             except Exception:
