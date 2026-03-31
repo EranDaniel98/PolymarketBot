@@ -102,13 +102,15 @@ class WhaleSignal(SignalPlugin):
             return None
 
         # Analyze trades
-        single_whale = False
         whale_buys_usd = 0.0
         whale_sells_usd = 0.0
         total_whale_volume = 0.0
 
         # Group by maker address for cumulative check
         by_maker: dict[str, float] = {}
+        by_maker_buys: dict[str, float] = {}
+        by_maker_sells: dict[str, float] = {}
+        whale_makers: set[str] = set()  # Makers already counted (avoid double-counting)
 
         for t in recent:
             size = float(t.get("size", t.get("amount", 0)))
@@ -117,44 +119,34 @@ class WhaleSignal(SignalPlugin):
             side = t.get("side", "").upper()
             maker = (t.get("proxyWallet", "") or t.get("maker", "") or t.get("maker_address", "")).lower()
 
-            # Check tracked wallets — halve threshold
+            if maker:
+                by_maker[maker] = by_maker.get(maker, 0) + usd_value
+                if side == "BUY":
+                    by_maker_buys[maker] = by_maker_buys.get(maker, 0) + usd_value
+                else:
+                    by_maker_sells[maker] = by_maker_sells.get(maker, 0) + usd_value
+
+            # Check single-trade threshold
             is_tracked = maker in self._tracked_wallets if maker else False
             effective_single = self._single_threshold / 2 if is_tracked else self._single_threshold
 
-            if usd_value >= effective_single:
-                single_whale = True
-                total_whale_volume += usd_value
-                if side == "BUY":
-                    whale_buys_usd += usd_value
-                else:
-                    whale_sells_usd += usd_value
-
-            if maker:
-                by_maker[maker] = by_maker.get(maker, 0) + usd_value
+            if usd_value >= effective_single and maker:
+                whale_makers.add(maker)
 
         # Check cumulative threshold per maker
         for maker, total in by_maker.items():
             is_tracked = maker in self._tracked_wallets
             effective_cum = self._cumulative_threshold / 2 if is_tracked else self._cumulative_threshold
             if total >= effective_cum:
-                total_whale_volume += total
-                # Attribute direction from this maker's trades
-                maker_buys = sum(
-                    float(t.get("size", t.get("amount", 0))) * float(t.get("price", 0))
-                    for t in recent
-                    if (t.get("proxyWallet", "") or t.get("maker", "") or t.get("maker_address", "")).lower() == maker
-                    and t.get("side", "").upper() == "BUY"
-                )
-                maker_sells = sum(
-                    float(t.get("size", t.get("amount", 0))) * float(t.get("price", 0))
-                    for t in recent
-                    if (t.get("proxyWallet", "") or t.get("maker", "") or t.get("maker_address", "")).lower() == maker
-                    and t.get("side", "").upper() != "BUY"
-                )
-                whale_buys_usd += maker_buys
-                whale_sells_usd += maker_sells
+                whale_makers.add(maker)
 
-        if total_whale_volume == 0 and not single_whale:
+        # Aggregate volume from all whale makers (counted exactly once per maker)
+        for maker in whale_makers:
+            total_whale_volume += by_maker.get(maker, 0)
+            whale_buys_usd += by_maker_buys.get(maker, 0)
+            whale_sells_usd += by_maker_sells.get(maker, 0)
+
+        if total_whale_volume == 0:
             return None
 
         # Direction = net direction of whale trades

@@ -19,6 +19,10 @@ class PollSignal(SignalPlugin):
     def name(self) -> str:
         return "polls"
 
+    @property
+    def eval_interval(self) -> int | None:
+        return 3600  # 60 minutes — 12h half-life, currently a no-op
+
     async def start(self) -> None:
         self._client = httpx.AsyncClient(timeout=30)
 

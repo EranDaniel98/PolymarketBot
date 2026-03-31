@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import time
 
 from polymarket_bot.cli import console, print_signal
 from polymarket_bot.event_bus import EventBus
@@ -33,6 +34,7 @@ class SignalPoller:
         self._running = False
         self._scan_task: asyncio.Task | None = None
         self._eval_task: asyncio.Task | None = None
+        self._last_eval: dict[str, float] = {}  # plugin.name → last eval timestamp
 
     async def start(self) -> None:
         self._running = True
@@ -88,11 +90,26 @@ class SignalPoller:
                 plugin.name, market.id[:16],
             )
 
+    def _plugin_due(self, plugin: SignalPlugin) -> bool:
+        """Check if a plugin is due for evaluation based on its eval_interval."""
+        interval = getattr(plugin, 'eval_interval', None) or self._signal_interval
+        last = self._last_eval.get(plugin.name, 0)
+        return (time.time() - last) >= interval
+
     async def _evaluate_cycle(self) -> None:
         """Collect all signals from one cycle, group by market, publish signal_batch events."""
         semaphore = asyncio.Semaphore(10)
-        # signals_by_market: market_id -> (market, [signals])
         signals_by_market: dict[str, tuple[Market, list]] = {}
+        now = time.time()
+
+        # Determine which plugins are due for evaluation this cycle
+        due_plugins = [p for p in self._plugins if self._plugin_due(p)]
+        if not due_plugins:
+            return
+
+        # Tag markets with rank for LLM top-N filtering
+        for i, market in enumerate(self._markets):
+            market._rank = i  # Markets already sorted by filter score
 
         async def _eval_one(market: Market, plugin: "SignalPlugin") -> None:
             if not plugin.can_evaluate(market):
@@ -116,28 +133,38 @@ class SignalPoller:
         tasks = [
             _eval_with_sem(m, p)
             for m in self._markets
-            for p in self._plugins
+            for p in due_plugins
             if p.can_evaluate(m)
         ]
         await asyncio.gather(*tasks, return_exceptions=True)
+
+        # Update last-eval timestamps for plugins that ran
+        for p in due_plugins:
+            self._last_eval[p.name] = now
 
         for market, signals in signals_by_market.values():
             event = SignalBatchEvent(signals=tuple(signals), market=market)
             await self._bus.publish("signal_batch", event)
 
+        if logger.isEnabledFor(logging.DEBUG):
+            skipped = [p.name for p in self._plugins if p not in due_plugins]
+            if skipped:
+                logger.debug("Skipped plugins (not due): %s", ", ".join(skipped))
+
     async def _evaluate_loop(self) -> None:
-        """Periodically run all signal plugins against all markets (parallel with semaphore)."""
+        """Periodically run signal plugins against all markets (respecting per-plugin intervals)."""
         while self._running:
             if not self._markets or not self._plugins:
                 await asyncio.sleep(self._signal_interval)
                 continue
 
-            logger.info(
-                "Evaluating %d plugins x %d markets",
-                len(self._plugins), len(self._markets),
-            )
+            due_count = sum(1 for p in self._plugins if self._plugin_due(p))
+            if due_count > 0:
+                logger.info(
+                    "Evaluating %d/%d plugins x %d markets",
+                    due_count, len(self._plugins), len(self._markets),
+                )
+                await self._evaluate_cycle()
+                logger.info("Signal evaluation cycle complete")
 
-            await self._evaluate_cycle()
-
-            logger.info("Signal evaluation cycle complete")
             await asyncio.sleep(self._signal_interval)

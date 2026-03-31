@@ -19,3 +19,12 @@ class SignalPlugin(ABC):
     def can_evaluate(self, market: Market) -> bool:
         """Return False to skip this market entirely. Default: evaluate all markets."""
         return True
+
+    @property
+    def eval_interval(self) -> int | None:
+        """Seconds between evaluations. None = use global signal_interval.
+
+        Override in subclasses to reduce evaluation frequency for signals
+        with long half-lives (e.g., weather=1800s, FLB=1800s).
+        """
+        return None

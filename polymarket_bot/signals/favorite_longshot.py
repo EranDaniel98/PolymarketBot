@@ -28,6 +28,10 @@ class FavoriteLongshotSignal(SignalPlugin):
     def name(self) -> str:
         return "favorite_longshot"
 
+    @property
+    def eval_interval(self) -> int | None:
+        return 1800  # 30 minutes — 24h half-life, purely structural
+
     async def start(self) -> None:
         pass
 

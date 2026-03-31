@@ -21,7 +21,8 @@ from polymarket_bot.arbitrage.detector import OpportunityDetector
 from polymarket_bot.arbitrage.mapper import MarketMapper
 from polymarket_bot.arbitrage.monitor import PriceMonitor
 from polymarket_bot.models import (
-    Direction, Market, SignalEvent, TradeDecision, TradeExecution, ArbitrageOpportunity,
+    Direction, Market, OrderStatus, SignalEvent, TradeDecision, TradeExecution,
+    ArbitrageOpportunity,
 )
 from polymarket_bot.calibrator import WeightCalibrator
 from polymarket_bot.exit_manager import ExitManager, ExitRule
@@ -41,6 +42,7 @@ from polymarket_bot.signals.favorite_longshot import FavoriteLongshotSignal
 from polymarket_bot.signals.divergence import DivergenceSignal
 from polymarket_bot.signals.weather import WeatherSignal
 from polymarket_bot.signals.whale import WhaleSignal
+from polymarket_bot.signals.crypto_price import CryptoPriceSignal
 from polymarket_bot.arbitrage.structural_arb import StructuralArbDetector
 from polymarket_bot.thin_market_detector import ThinMarketDetector
 
@@ -112,6 +114,13 @@ def build_signal_plugins(config: BotConfig) -> list[SignalPlugin]:
             tracked_wallets=sc.whale.tracked_wallets,
             poll_interval=sc.whale.poll_interval,
         ))
+    if sc.crypto_price.enabled:
+        plugins.append(CryptoPriceSignal(
+            exchanges=sc.crypto_price.exchanges,
+            min_divergence=sc.crypto_price.min_divergence,
+            max_days_to_expiry=sc.crypto_price.max_days_to_expiry,
+            poll_interval=sc.crypto_price.poll_interval,
+        ))
     return plugins
 
 
@@ -166,7 +175,9 @@ async def run_bot(config_path: str = "config.yaml"):
         bankroll = config.execution.paper_balance
         console.print(f"[bold yellow]Using paper balance: ${bankroll:.2f}[/]")
     console.print(f"[bold green]Wallet balance:[/] ${bankroll:.2f}")
-    risk_manager = RiskManager(config=config.risk, database=db, bankroll=bankroll)
+    risk_manager = RiskManager(
+        config=config.risk, database=db, bankroll=bankroll, fee_config=config.fee,
+    )
 
     # Weight calibrator — auto-adjusts signal weights based on track record
     calibrator = WeightCalibrator(database=db, min_samples=20, recalibrate_every=10)
@@ -273,6 +284,13 @@ async def run_bot(config_path: str = "config.yaml"):
 
     async def on_trade_execution(execution: TradeExecution):
         nonlocal bankroll
+
+        # Only process confirmed fills — ignore PLACED/PENDING/FAILED events
+        if execution.status not in (OrderStatus.FILLED, OrderStatus.PARTIAL_FILL):
+            logger.info("Ignoring non-fill execution: %s status=%s",
+                       execution.market_id[:16], execution.status.value)
+            return
+
         cached_market = market_cache.get(execution.market_id)
         exec_question = cached_market.question if cached_market else ""
         print_trade_execution(execution.market_id, execution.direction.value,
@@ -282,8 +300,10 @@ async def run_bot(config_path: str = "config.yaml"):
             # Confirmed exit fill — now safe to remove position and arm cooldown
             await exit_mgr.track_exit(execution.market_id)
             risk_manager.record_exit(execution.market_id)
+            # If this was a rotation exit, publish the queued entry now
+            await decision_engine.on_rotation_exit_filled(execution.market_id)
         else:
-            # Track new entries for exit management
+            # Track new entries for exit management — only on confirmed fill
             tokens = cached_market.tokens if cached_market else {}
             end_date = cached_market.end_date if cached_market else None
             category = cached_market.category if cached_market else ""
@@ -322,6 +342,11 @@ async def run_bot(config_path: str = "config.yaml"):
     for plugin in plugins:
         await plugin.start()
         console.print(f"[bold green]Signal plugin started:[/] [cyan]{plugin.name}[/]")
+
+    # Wire price monitor to CryptoPriceSignal for WebSocket-cached prices
+    crypto_plugin = next((p for p in plugins if p.name == "crypto_price"), None)
+    if crypto_plugin:
+        crypto_plugin.set_price_monitor(monitor)
 
     # Wire "Decide for me" callback for Telegram
     llm_plugin = next((p for p in plugins if p.name == "llm"), None)
@@ -487,13 +512,17 @@ async def run_bot(config_path: str = "config.yaml"):
 
     # Live dashboard loop
     from rich.live import Live
+    from polymarket_bot.cli import _time_ago
     start_time = time.time()
 
     with Live(console=console, refresh_per_second=0.2, transient=False) as live:
         try:
             while True:
-                # Gather dashboard data
+                now = datetime.now(timezone.utc)
+
+                # --- Positions ---
                 positions_data = []
+                correlated_exposure: dict[str, float] = {}
                 for mid, pos in exit_mgr._positions.items():
                     cp = monitor.get_cached_price("polymarket", mid)
                     if cp and pos.direction == Direction.YES:
@@ -504,20 +533,95 @@ async def run_bot(config_path: str = "config.yaml"):
                         pnl_val = 0
                     cached = market_cache.get(mid)
                     label = cached.question if cached else mid
+                    held = _time_ago(pos.entry_time) if pos.entry_time else ""
+                    days_left = (pos.end_date - now).total_seconds() / 86400 if pos.end_date else 0
+                    expires = f"{days_left:.0f}d" if pos.end_date and days_left > 0 else ""
                     positions_data.append({
                         "market_id": label, "direction": pos.direction.value,
                         "amount": pos.amount, "entry_price": pos.entry_price,
                         "current_price": cp or pos.entry_price, "pnl": pnl_val,
+                        "peak_pnl_pct": pos.peak_pnl_pct,
+                        "held": held, "expires": expires,
                     })
+                    cat = pos.category or "other"
+                    correlated_exposure[cat] = correlated_exposure.get(cat, 0) + pos.amount
 
+                # --- Database queries ---
                 daily_pnl = await db.get_daily_pnl()
                 total_exp = await db.get_total_exposure()
                 t_count = await db.get_trade_count()
+                total_pnl = await db.get_total_pnl()
+                win_rate = await db.get_win_rate()
+
+                # --- Recent signals ---
+                raw_signals = await db.get_recent_signals(limit=20)
+                recent_signals = []
+                for sig in raw_signals:
+                    ts = sig.get("timestamp", "")
+                    try:
+                        dt = datetime.fromisoformat(ts)
+                        time_str = _time_ago(dt)
+                    except (ValueError, TypeError):
+                        time_str = ""
+                    sig_market = market_cache.get(sig.get("market_id", ""))
+                    market_label = sig_market.question[:35] if sig_market else sig.get("market_id", "")[:16]
+                    recent_signals.append({
+                        "time": time_str,
+                        "source": sig.get("source", ""),
+                        "direction": sig.get("direction", ""),
+                        "confidence": sig.get("confidence", 0),
+                        "market": market_label,
+                    })
+
+                # --- Recent trades ---
+                raw_trades = await db.get_daily_trades()
+                recent_trades = []
+                for t in raw_trades[:10]:
+                    ts = t.get("timestamp", "")
+                    try:
+                        dt = datetime.fromisoformat(ts)
+                        time_str = _time_ago(dt)
+                    except (ValueError, TypeError):
+                        time_str = ""
+                    t_market = market_cache.get(t.get("market_id", ""))
+                    market_label = t_market.question[:30] if t_market else t.get("market_id", "")[:16]
+                    recent_trades.append({
+                        "time": time_str,
+                        "direction": t.get("direction", ""),
+                        "amount": t.get("amount", 0),
+                        "price": t.get("price", 0),
+                        "pnl": t.get("realized_pnl", 0),
+                        "market": market_label,
+                    })
+
+                # --- Plugin stats ---
+                accuracy_report = await db.get_accuracy_report()
+                plugin_stats = []
+                for plugin in plugins:
+                    acc_data = accuracy_report.get(plugin.name)
+                    plugin_stats.append({
+                        "name": plugin.name,
+                        "active": True,
+                        "signal_count": acc_data["n_signals"] if acc_data else 0,
+                        "accuracy": acc_data["accuracy"] if acc_data else None,
+                        "weight": decision_engine._weights.get(plugin.name, 0),
+                    })
+
+                max_daily_loss = bankroll * config.risk.max_daily_loss_pct
 
                 dashboard = build_full_dashboard(
                     positions_data, daily_pnl, total_exp, bankroll,
                     t_count, time.time() - start_time,
                     config.execution.paper_trading,
+                    total_pnl=total_pnl,
+                    win_rate=win_rate,
+                    circuit_breaker=risk_manager.circuit_breaker_active,
+                    recovery=risk_manager.in_recovery,
+                    recent_signals=recent_signals,
+                    recent_trades=recent_trades,
+                    plugin_stats=plugin_stats,
+                    max_daily_loss=max_daily_loss,
+                    correlated_exposure=correlated_exposure,
                 )
                 live.update(dashboard)
                 await asyncio.sleep(5)

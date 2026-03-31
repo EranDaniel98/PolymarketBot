@@ -9,6 +9,7 @@ DEFAULT_WEIGHTS = {
     "llm": 0.25,
     "favorite_longshot": 0.20,
     "weather": 0.20,
+    "crypto_price": 0.20,
     "divergence": 0.15,
     "polls": 0.10,
     "bookmaker": 0.10,

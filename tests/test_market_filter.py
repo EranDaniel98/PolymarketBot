@@ -79,3 +79,20 @@ def test_extreme_low_price_passes_with_volume(mf):
     m = _make_market_with_vol(price=0.05, volume=10000, days_out=15)
     result = mf.filter_and_rank([m])
     assert len(result) == 1
+
+
+def test_geopolitics_scores_higher_than_crypto(mf):
+    """Geopolitics (0% fee) should rank above crypto (1% fee) at same price/time."""
+    geo = _make_market(price=0.30, category="geopolitics")
+    crypto = _make_market(price=0.30, category="crypto")
+    result = mf.filter_and_rank([crypto, geo])
+    assert result[0].category == "geopolitics"
+
+
+def test_5min_crypto_penalized(mf):
+    """Short-duration crypto markets (high fees) should be heavily penalized."""
+    normal = _make_market(price=0.30, category="crypto", question="Will BTC be above $100k on April 1?")
+    short = _make_market(price=0.30, category="crypto", question="BTC 5-min up or down?")
+    result = mf.filter_and_rank([short, normal])
+    # Normal should rank first; short may even get filtered out
+    assert result[0].question == "Will BTC be above $100k on April 1?"

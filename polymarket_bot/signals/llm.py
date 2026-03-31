@@ -53,10 +53,7 @@ Category: {category}
 
 ## Recent World Events
 {wikipedia_context}
-
-## Bookmaker/External Odds
-{odds_context}
-
+{odds_section}
 Analyze ALL evidence. Estimate the true probability of YES. Compare to the current market price of {price:.1%}. Only flag an edge if evidence clearly supports a different probability."""
 
 
@@ -153,12 +150,15 @@ def _aggregate_weighted(results: list[dict], weights: list[float]) -> dict:
 
 
 class LLMSignal(SignalPlugin):
+    # Skip LLM evaluation for short-duration crypto markets (covered by crypto_price signal)
+    _SKIP_KEYWORDS = {"5-min", "5 min", "15-min", "15 min", "5min", "15min", "up or down"}
+
     def __init__(
         self, api_key: str, model: str = "claude-opus-4-6-20250514",
         screening_model: str = "claude-haiku-4-5-20250514", newsapi_key: str = "",
         openai_api_key: str = "", ensemble_enabled: bool = False,
         ensemble_models: list[dict] | None = None, aggregation: str = "trimmed_mean",
-        confidence_discount: float = 1.0,
+        confidence_discount: float = 0.70,
     ):
         self._api_key = api_key
         self._model = model
@@ -174,6 +174,10 @@ class LLMSignal(SignalPlugin):
         self._backends: list[_ModelBackend] = []
         self._consecutive_failures: int = 0
         self._circuit_open_until: datetime | None = None
+        self._wikipedia_cache: tuple[float, str] | None = None  # (timestamp, content)
+        # Per-market result cache: market_id → (cached_price, timestamp, signal_or_none)
+        self._result_cache: dict[str, tuple[float, float, Signal | None]] = {}
+        self._max_llm_markets: int = 15  # Only evaluate top-N markets by filter rank
 
     def _check_circuit(self) -> bool:
         """Return True if circuit is open (should skip evaluation)."""
@@ -207,6 +211,25 @@ class LLMSignal(SignalPlugin):
     def name(self) -> str:
         return "llm"
 
+    @property
+    def eval_interval(self) -> int | None:
+        return 600  # 10 minutes — 6h half-life, same market/price gives same answer
+
+    def can_evaluate(self, market) -> bool:
+        """Skip markets that would waste LLM tokens for little value."""
+        q = market.question.lower()
+        # Skip short-duration crypto markets (covered by crypto_price signal, high-fee)
+        if any(kw in q for kw in self._SKIP_KEYWORDS):
+            return False
+        # Skip markets with very low volume (too illiquid to trade profitably)
+        if hasattr(market, 'volume') and market.volume < 1000:
+            return False
+        # Only evaluate top-N markets by filter rank (set by poller)
+        rank = getattr(market, '_rank', 0)
+        if rank >= self._max_llm_markets:
+            return False
+        return True
+
     async def start(self) -> None:
         self._client = anthropic.AsyncAnthropic(api_key=self._api_key, max_retries=0)
         self._http = httpx.AsyncClient(
@@ -232,10 +255,17 @@ class LLMSignal(SignalPlugin):
                 ))
             logger.info("Ensemble enabled with %d backends", len(self._backends))
         else:
-            # Single-model backward-compatible mode
-            self._backends = [_ModelBackend(
-                provider="anthropic", model=self._model, weight=1.0, client=self._client,
-            )]
+            # Single-model mode — prefer OpenAI if key is set (cheaper)
+            if self._openai_api_key and self._model.startswith("gpt"):
+                from openai import AsyncOpenAI
+                openai_client = AsyncOpenAI(api_key=self._openai_api_key, max_retries=0)
+                self._backends = [_ModelBackend(
+                    provider="openai", model=self._model, weight=1.0, client=openai_client,
+                )]
+            else:
+                self._backends = [_ModelBackend(
+                    provider="anthropic", model=self._model, weight=1.0, client=self._client,
+                )]
 
     async def stop(self) -> None:
         for backend in self._backends:
@@ -248,8 +278,8 @@ class LLMSignal(SignalPlugin):
             await self._http.aclose()
 
     async def _quick_screen(self, market: Market) -> bool:
-        """Tier 1: Cheap Haiku screening to decide if deep analysis is worth it."""
-        if not self._client:
+        """Tier 1: Cheap screening to decide if deep analysis is worth it."""
+        if not self._backends:
             return False
         try:
             prompt = SCREENING_PROMPT.format(
@@ -257,38 +287,69 @@ class LLMSignal(SignalPlugin):
                 price=market.current_price,
                 category=market.category or "general",
             )
-            response = await self._client.messages.create(
-                model=self._screening_model,
-                max_tokens=100,
-                messages=[{"role": "user", "content": prompt}],
-            )
-            text = response.content[0].text.strip().upper()
+            # Use the first backend's provider for screening (matches model provider)
+            backend = self._backends[0]
+            if backend.provider == "openai":
+                response = await backend.client.chat.completions.create(
+                    model=self._screening_model,
+                    max_tokens=100,
+                    messages=[{"role": "user", "content": prompt}],
+                )
+                text = response.choices[0].message.content.strip().upper()
+            else:
+                response = await self._client.messages.create(
+                    model=self._screening_model,
+                    max_tokens=100,
+                    messages=[{"role": "user", "content": prompt}],
+                )
+                text = response.content[0].text.strip().upper()
             return text.startswith("YES") or text.startswith("MAYBE")
         except Exception:
             logger.debug("LLM screening failed, skipping market")
-            return False  # On error, skip — don't send to expensive ensemble
+            return False
 
     async def evaluate(self, market: Market) -> Signal | None:
-        if not self._client:
+        if not self._backends:
             return None
         if self._check_circuit():
             return None
+
+        # Check result cache — skip if price hasn't moved >3% and cache <6h old
+        import time as _time
+        cached = self._result_cache.get(market.id)
+        if cached:
+            cached_price, cached_ts, cached_signal = cached
+            price_moved = abs(market.current_price - cached_price) / max(cached_price, 0.01)
+            age_minutes = (_time.time() - cached_ts) / 60
+            if price_moved < 0.03 and age_minutes < 360:
+                return cached_signal
 
         try:
             # Tier 1: Quick screen with cheap model
             worth_analyzing = await self._quick_screen(market)
             if not worth_analyzing:
+                # Cache the "no signal" result to avoid re-screening
+                self._result_cache[market.id] = (market.current_price, _time.time(), None)
                 return None
 
             # Tier 2: Deep analysis with full model(s)
-            # Gather context from multiple sources (shared across all backends)
-            news_context = await self._gather_news(market.question)
-            reddit_context = await self._gather_reddit(market.question)
-            odds_context = await self._gather_odds(market.question)
-            market_details = await self._gather_polymarket_context(market)
-            related_markets = await self._gather_related_markets(market)
-            metaculus_context = await self._gather_metaculus(market.question)
-            wikipedia_context = await self._gather_wikipedia()
+            # Gather context from multiple sources in parallel
+            (
+                news_context, reddit_context, odds_context,
+                market_details, related_markets, metaculus_context,
+                wikipedia_context,
+            ) = await asyncio.gather(
+                self._gather_news(market.question),
+                self._gather_reddit(market.question),
+                self._gather_odds(market.question),
+                self._gather_polymarket_context(market),
+                self._gather_related_markets(market),
+                self._gather_metaculus(market.question),
+                self._gather_wikipedia(),
+            )
+
+            # Only include odds section if we actually have odds data
+            odds_section = f"\n## Bookmaker/External Odds\n{odds_context}\n" if odds_context else ""
 
             prompt = PROMPT_TEMPLATE.format(
                 question=market.question,
@@ -301,7 +362,7 @@ class LLMSignal(SignalPlugin):
                 reddit_context=reddit_context or "No Reddit discussion found.",
                 metaculus_context=metaculus_context or "No forecasts found.",
                 wikipedia_context=wikipedia_context or "No recent events found.",
-                odds_context=odds_context or "No external odds available.",
+                odds_section=odds_section,
             )
 
             # Fan out queries to all backends in parallel
@@ -358,7 +419,7 @@ class LLMSignal(SignalPlugin):
             n_backends = len(parsed_results)
             model_label = f"ensemble({n_backends})" if n_backends > 1 else self._backends[0].model
 
-            return Signal(
+            signal = Signal(
                 source=self.name,
                 market_id=market.id,
                 direction=direction,
@@ -367,6 +428,9 @@ class LLMSignal(SignalPlugin):
                           f"(edge {edge:+.1%}, self-conf {llm_confidence:.0%}). {reasoning}",
                 timestamp=datetime.now(timezone.utc),
             )
+            # Cache result for this market (reuse if price doesn't move >3%)
+            self._result_cache[market.id] = (market.current_price, _time.time(), signal)
+            return signal
         except Exception:
             logger.exception("LLM signal evaluation failed")
             return None
@@ -500,7 +564,16 @@ class LLMSignal(SignalPlugin):
             return ""
 
     async def _gather_wikipedia(self) -> str:
-        """Fetch current events from Wikipedia for world context."""
+        """Fetch current events from Wikipedia for world context.
+
+        Cached for 30 minutes since it's the same content for all markets.
+        """
+        import time as _time
+        if self._wikipedia_cache:
+            cache_ts, cache_content = self._wikipedia_cache
+            if _time.time() - cache_ts < 1800:  # 30 minutes
+                return cache_content
+
         if not self._http:
             return ""
         try:
@@ -510,15 +583,15 @@ class LLMSignal(SignalPlugin):
             )
             if resp.status_code != 200:
                 return ""
-            # Extract bullet points from HTML — simple regex for <li> content
             text = resp.text
             items = re.findall(r'<li[^>]*>(.*?)</li>', text, re.DOTALL)
             lines = []
             for item in items[:10]:
-                # Strip HTML tags
                 clean = re.sub(r'<[^>]+>', '', item).strip()
                 if clean and len(clean) > 20:
                     lines.append(f"- {clean[:200]}")
-            return "\n".join(lines[:8])
+            content = "\n".join(lines[:8])
+            self._wikipedia_cache = (_time.time(), content)
+            return content
         except Exception:
             return ""

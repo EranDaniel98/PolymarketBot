@@ -1,7 +1,7 @@
 import pytest
 from unittest.mock import AsyncMock
-from polymarket_bot.decision.risk import RiskManager, half_kelly
-from polymarket_bot.config import RiskConfig
+from polymarket_bot.decision.risk import RiskManager, half_kelly, calculate_round_trip_fee
+from polymarket_bot.config import FeeConfig, RiskConfig
 from polymarket_bot.models import Direction, Signal, TradeDecision, OrderType
 from datetime import datetime, timezone
 
@@ -83,8 +83,8 @@ async def test_check_risk_rejects_max_exposure(risk_manager, mock_db):
 
 
 async def test_half_kelly_formula():
-    # Fee-adjusted odds: b = (1-1/3)/(1/3) * (1-0.02) = 2.0 * 0.98 = 1.96
-    # full = (0.7*1.96 - 0.3)/1.96 = (1.372-0.3)/1.96 = 0.547, half = 0.274
+    # Fee-adjusted odds: b = (1-1/3)/(1/3) * (1-0.01) = 2.0 * 0.99 = 1.98
+    # full = (0.7*1.98 - 0.3)/1.98 = (1.386-0.3)/1.98 = 0.548, half = 0.274
     result = half_kelly(p=0.7, market_price=1/3, fraction=0.5)
     assert 0.20 < result < 0.30
 
@@ -187,3 +187,77 @@ async def test_minimum_trade_size_enforced(mock_db):
     approved, reason = await rm.check(decision, market_price=0.30)
     assert approved is False
     assert "minimum" in reason.lower()
+
+
+# --- Dynamic fee model tests ---
+
+
+def test_calculate_round_trip_fee_maker():
+    """Maker orders always pay 0%."""
+    assert calculate_round_trip_fee("crypto", is_maker=True) == 0.0
+    assert calculate_round_trip_fee("sports", is_maker=True) == 0.0
+
+
+def test_calculate_round_trip_fee_geopolitics():
+    """Geopolitics markets are fee-free."""
+    assert calculate_round_trip_fee("geopolitics") == 0.0
+
+
+def test_calculate_round_trip_fee_politics():
+    """Politics taker fee is 1% (changed March 30, 2026)."""
+    assert calculate_round_trip_fee("politics") == 0.01
+
+
+def test_calculate_round_trip_fee_crypto():
+    """Crypto taker fee is 1.8% (increased March 30, 2026)."""
+    assert calculate_round_trip_fee("crypto") == 0.018
+
+
+def test_calculate_round_trip_fee_sports():
+    """Sports taker fee is 0.75%."""
+    assert calculate_round_trip_fee("sports") == 0.0075
+
+
+def test_calculate_round_trip_fee_default_fallback():
+    """Unknown categories use the default taker fee."""
+    assert calculate_round_trip_fee("unknown_category") == 0.01
+    assert calculate_round_trip_fee("") == 0.01
+
+
+def test_calculate_round_trip_fee_with_config():
+    """FeeConfig overrides built-in category defaults."""
+    cfg = FeeConfig(
+        default_taker_fee=0.02,
+        category_taker_fees={"crypto": 0.005, "special": 0.0},
+    )
+    assert calculate_round_trip_fee("crypto", fee_config=cfg) == 0.005
+    assert calculate_round_trip_fee("special", fee_config=cfg) == 0.0
+    assert calculate_round_trip_fee("other", fee_config=cfg) == 0.02  # default
+
+
+def test_half_kelly_with_lower_fee_gives_larger_position():
+    """Lower fees should produce larger Kelly fractions."""
+    size_high_fee = half_kelly(p=0.65, market_price=0.50, fraction=0.5, round_trip_fee=0.03)
+    size_low_fee = half_kelly(p=0.65, market_price=0.50, fraction=0.5, round_trip_fee=0.0)
+    size_default = half_kelly(p=0.65, market_price=0.50, fraction=0.5)
+    assert size_low_fee > size_default > size_high_fee
+
+
+def test_half_kelly_backward_compat():
+    """Default round_trip_fee=0.01 produces reasonable results."""
+    result = half_kelly(p=0.7, market_price=1/3, fraction=0.5)
+    assert 0.20 < result < 0.30
+
+
+async def test_position_size_with_category(mock_db):
+    """Category-aware sizing: geopolitics (0% fee) should give equal or larger sizes."""
+    config = RiskConfig(
+        max_position_pct=0.10, max_exposure_pct=0.50, max_daily_loss_pct=0.10,
+        min_edge=0.03, kelly_fraction=0.5, bootstrap_trades=10,
+        bootstrap_size_pct=0.01, cooldown_seconds=300,
+    )
+    mock_db.get_trade_count.return_value = 50  # Past bootstrap
+    rm = RiskManager(config=config, database=mock_db, bankroll=5000.0)
+    size_default = await rm.calculate_position_size(0.7, 0.50, category="crypto")
+    size_geo = await rm.calculate_position_size(0.7, 0.50, category="geopolitics")
+    assert size_geo >= size_default

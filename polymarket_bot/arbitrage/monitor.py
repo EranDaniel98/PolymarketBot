@@ -45,6 +45,9 @@ class PriceMonitor:
         self._http_client = httpx.AsyncClient(timeout=30)
         self._ws_task = asyncio.create_task(self._subscribe_polymarket())
         self._poll_task = asyncio.create_task(self._poll_external_platforms())
+        self._crypto_ws_task: asyncio.Task | None = asyncio.create_task(
+            self._subscribe_crypto_exchanges()
+        )
 
     async def stop(self) -> None:
         self._running = False
@@ -52,6 +55,8 @@ class PriceMonitor:
             self._ws_task.cancel()
         if self._poll_task:
             self._poll_task.cancel()
+        if hasattr(self, '_crypto_ws_task') and self._crypto_ws_task:
+            self._crypto_ws_task.cancel()
         if self._http_client:
             await self._http_client.aclose()
 
@@ -90,13 +95,13 @@ class PriceMonitor:
         self._price_timestamps[polymarket_id][platform] = time.time()
 
     async def _subscribe_polymarket(self) -> None:
-        # Combine mapper IDs and subscribed IDs
-        all_ids = list(set(self._mapper.all_polymarket_ids() + self._subscribed_ids))
-        if not all_ids:
-            logger.info("No market IDs to subscribe — skipping Polymarket WS")
-            return
-
         while self._running:
+            # Refresh IDs on each reconnect to pick up newly subscribed markets
+            all_ids = list(set(self._mapper.all_polymarket_ids() + self._subscribed_ids))
+            if not all_ids:
+                logger.info("No market IDs to subscribe — waiting for markets")
+                await asyncio.sleep(5)
+                continue
             try:
                 async with websockets.connect(POLYMARKET_WS) as ws:
                     for mid in all_ids:
@@ -197,3 +202,44 @@ class PriceMonitor:
         resp.raise_for_status()
         data = resp.json()
         return data.get("probability")
+
+    async def _subscribe_crypto_exchanges(self) -> None:
+        """Stream real-time crypto spot prices via CCXT WebSocket (Binance).
+
+        Prices are stored in the shared cache under platform="binance" with
+        the CCXT symbol as key (e.g., "BTC/USDT"). The CryptoPriceSignal
+        plugin can read these via get_cached_price("binance", "BTC/USDT").
+        """
+        try:
+            import ccxt.pro as ccxtpro
+        except ImportError:
+            logger.info("ccxt.pro not available — crypto exchange WS disabled")
+            return
+
+        symbols = ["BTC/USDT", "ETH/USDT", "SOL/USDT"]
+        exchange = ccxtpro.binance({"enableRateLimit": True})
+
+        try:
+            while self._running:
+                for symbol in symbols:
+                    try:
+                        ticker = await exchange.watch_ticker(symbol)
+                        price = ticker.get("last")
+                        if price:
+                            self._update_price("binance", symbol, float(price))
+                            await self._bus.publish("crypto_price_update", {
+                                "symbol": symbol,
+                                "price": float(price),
+                            })
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception:
+                        logger.debug("Crypto WS error for %s", symbol, exc_info=True)
+                        await asyncio.sleep(1)
+        except asyncio.CancelledError:
+            pass
+        finally:
+            try:
+                await exchange.close()
+            except Exception:
+                pass

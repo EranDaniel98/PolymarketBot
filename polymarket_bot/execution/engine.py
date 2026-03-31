@@ -295,7 +295,7 @@ class ExecutionEngine:
                 order_id = new_oid
                 logger.info("Order repriced (attempt %d): %s @ %.4f", attempt + 1, new_oid[:12], new_price)
 
-                # Record the repriced order so it's tracked
+                # Record repriced order in DB for audit trail
                 if new_status in (OrderStatus.FILLED, OrderStatus.PLACED):
                     execution = TradeExecution(
                         market_id=decision.market_id,
@@ -307,7 +307,10 @@ class ExecutionEngine:
                         is_exit=decision.is_exit,
                     )
                     await self._db.save_trade(execution)
-                    await self._bus.publish("trade_execution", execution)
+                    # Only publish confirmed fills — PLACED reprices must not
+                    # re-trigger track_entry with a different price
+                    if new_status == OrderStatus.FILLED:
+                        await self._bus.publish("trade_execution", execution)
             except Exception:
                 logger.debug("Reprice attempt %d failed", attempt + 1)
                 return

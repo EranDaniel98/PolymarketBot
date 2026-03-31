@@ -25,28 +25,28 @@ WEATHER_KEYWORDS = [
     "humidity", "heat", "cold", "freeze", "frost",
 ]
 
-# Cities with NOAA station IDs for reliable forecasts
-CITY_STATIONS = {
-    "new york": "KNYC",
-    "nyc": "KNYC",
-    "los angeles": "KLAX",
-    "la": "KLAX",
-    "chicago": "KORD",
-    "miami": "KMIA",
-    "london": "EGLL",
-    "washington": "KDCA",
-    "dc": "KDCA",
-    "san francisco": "KSFO",
-    "boston": "KBOS",
-    "seattle": "KSEA",
-    "denver": "KDEN",
-    "atlanta": "KATL",
-    "dallas": "KDFW",
-    "houston": "KIAH",
-    "phoenix": "KPHX",
-    "philadelphia": "KPHL",
-    "detroit": "KDTW",
-    "minneapolis": "KMSP",
+# Cities mapped to NWS forecast grid coordinates (office/gridX,gridY)
+# These are used to fetch forecasts from api.weather.gov/gridpoints/{office}/{x},{y}/forecast
+CITY_GRIDS = {
+    "new york": ("OKX", 33, 37),
+    "nyc": ("OKX", 33, 37),
+    "los angeles": ("LOX", 154, 44),
+    "la": ("LOX", 154, 44),
+    "chicago": ("LOT", 65, 76),
+    "miami": ("MFL", 110, 50),
+    "washington": ("LWX", 97, 71),
+    "dc": ("LWX", 97, 71),
+    "san francisco": ("MTR", 85, 105),
+    "boston": ("BOX", 71, 90),
+    "seattle": ("SEW", 124, 67),
+    "denver": ("BOU", 62, 60),
+    "atlanta": ("FFC", 50, 86),
+    "dallas": ("FWD", 80, 103),
+    "houston": ("HGX", 65, 97),
+    "phoenix": ("PSR", 159, 57),
+    "philadelphia": ("PHI", 57, 97),
+    "detroit": ("DTX", 65, 33),
+    "minneapolis": ("MPX", 107, 71),
 }
 
 
@@ -59,6 +59,10 @@ class WeatherSignal(SignalPlugin):
     @property
     def name(self) -> str:
         return "weather"
+
+    @property
+    def eval_interval(self) -> int | None:
+        return 1800  # 30 minutes — 12h half-life, NOAA updates 4x/day
 
     async def start(self) -> None:
         self._http = httpx.AsyncClient(
@@ -170,33 +174,45 @@ class WeatherSignal(SignalPlugin):
 
         return None
 
-    def _detect_city(self, question_lower: str) -> str | None:
-        for city_name, station in CITY_STATIONS.items():
+    def _detect_city(self, question_lower: str) -> tuple[str, int, int] | None:
+        for city_name, grid in CITY_GRIDS.items():
             if city_name in question_lower:
-                return station
+                return grid
         return None
 
-    async def _get_forecast(self, station: str) -> float | None:
-        """Fetch forecast temperature from weather.gov API (free, no auth)."""
+    async def _get_forecast(self, grid: tuple[str, int, int]) -> float | None:
+        """Fetch forecast high temperature from NWS gridpoints API (free, no auth).
+
+        Uses the forecast endpoint which returns multi-day forecasts,
+        not the observations endpoint which only shows current conditions.
+        """
         if not self._http:
             return None
+        office, grid_x, grid_y = grid
         try:
-            # NWS API: get forecast for station
             resp = await self._http.get(
-                f"https://api.weather.gov/stations/{station}/observations/latest",
+                f"https://api.weather.gov/gridpoints/{office}/{grid_x},{grid_y}/forecast",
                 headers={"Accept": "application/geo+json"},
             )
             if resp.status_code != 200:
                 return None
 
             data = resp.json()
-            props = data.get("properties", {})
-            temp_c = props.get("temperature", {}).get("value")
-            if temp_c is None:
+            periods = data.get("properties", {}).get("periods", [])
+            if not periods:
                 return None
 
-            # Convert Celsius to Fahrenheit (Polymarket weather markets use °F)
-            return round(temp_c * 9 / 5 + 32, 1)
+            # Use the first daytime period's temperature (today/tomorrow high)
+            for period in periods[:4]:
+                if period.get("isDaytime", True):
+                    temp = period.get("temperature")
+                    unit = period.get("temperatureUnit", "F")
+                    if temp is not None:
+                        if unit == "C":
+                            return round(temp * 9 / 5 + 32, 1)
+                        return float(temp)
+
+            return None
         except Exception:
-            logger.debug("Weather forecast fetch failed for station %s", station)
+            logger.debug("Weather forecast fetch failed for grid %s/%d,%d", office, grid_x, grid_y)
             return None

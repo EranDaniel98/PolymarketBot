@@ -21,9 +21,11 @@ def _clamp(x: float, lo: float = 0.01, hi: float = 0.99) -> float:
 def _infer_category(question: str) -> str:
     """Infer category from question text when Gamma API doesn't provide one."""
     q = question.lower()
+    if any(w in q for w in ("war", "invasion", "treaty", "nato", "un ", "sanctions", "geopoliti")):
+        return "geopolitics"
     if any(w in q for w in ("election", "president", "congress", "vote", "poll")):
         return "politics"
-    if any(w in q for w in ("bitcoin", "ethereum", "crypto", "btc", "eth")):
+    if any(w in q for w in ("bitcoin", "ethereum", "crypto", "btc", "eth", "solana")):
         return "crypto"
     if any(w in q for w in ("nba", "nfl", "mlb", "game", "match", "score")):
         return "sports"
@@ -55,7 +57,9 @@ class DecisionEngine:
             "divergence": signals_config.divergence.weight,
             "weather": signals_config.weather.weight,
             "whale": signals_config.whale.weight,
+            "crypto_price": signals_config.crypto_price.weight,
         }
+        self._pending_rotation_entries: dict[str, TradeDecision] = {}
 
     # Signal half-lives in minutes
     SIGNAL_HALF_LIVES = {
@@ -67,6 +71,7 @@ class DecisionEngine:
         "bookmaker": 180,           # 3 hours — odds move faster
         "whale": 60,                # 1 hour — whale impact fades quickly
         "news": 60,                 # 1 hour — news cycles fast
+        "crypto_price": 30,         # 30 min — spot prices move fast
     }
 
     def _freshness_factor(self, signal: Signal) -> float:
@@ -203,10 +208,19 @@ class DecisionEngine:
             is_exit=True,
         )
         await self._bus.publish("trade_decision", exit_decision)
-        # NOTE: track_exit + record_exit happen in on_trade_execution after confirmed fill.
-        # Only publish the new entry after the exit decision is dispatched.
-        await self._bus.publish("trade_decision", new_decision)
+
+        # Queue the entry to fire after the exit fills via trade_execution event.
+        # This prevents exposure cap bypass from simultaneous old+new positions.
+        self._pending_rotation_entries[rotate_id] = new_decision
         return True
+
+    async def on_rotation_exit_filled(self, market_id: str) -> None:
+        """Called when a rotation exit fills — now safe to publish the queued entry."""
+        entry = self._pending_rotation_entries.pop(market_id, None)
+        if entry:
+            logger.info("Rotation exit filled for %s — publishing entry for %s",
+                       market_id[:16], entry.market_id[:16])
+            await self._bus.publish("trade_decision", entry)
 
     async def _exposure_ratio(self) -> float:
         """Return current exposure as a fraction of the limit (0.0 to 1.0+)."""
@@ -328,7 +342,14 @@ class DecisionEngine:
             return
 
         direction = self.determine_majority_direction(recent_signals)
-        size = await self._risk.calculate_position_size(composite, market.current_price)
+        category = market.category or _infer_category(market.question)
+
+        # Use the effective token price for the traded side
+        # YES token costs market.current_price; NO token costs 1 - market.current_price
+        effective_price = market.current_price if direction == Direction.YES else (1 - market.current_price)
+        size = await self._risk.calculate_position_size(
+            composite, effective_price, category=category,
+        )
 
         _slog.info(
             "Decision: %s %s $%.2f (%s)", direction.value, market.id[:16], size, action,
@@ -365,12 +386,12 @@ class DecisionEngine:
             category=market.category or _infer_category(market.question),
         )
 
-        approved, reason = await self._risk.check(decision, market.current_price)
+        approved, reason = await self._risk.check(decision, effective_price)
         if not approved:
             # Try position rotation if rejected due to max exposure
             rotated = False
             if "Max exposure" in reason:
-                rotated = await self._try_rotation(decision, market.current_price, _slog)
+                rotated = await self._try_rotation(decision, effective_price, _slog)
 
             if not rotated:
                 _slog.warning(

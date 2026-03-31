@@ -31,6 +31,10 @@ class DivergenceSignal(SignalPlugin):
     def name(self) -> str:
         return "divergence"
 
+    @property
+    def eval_interval(self) -> int | None:
+        return 1800  # 30 minutes — 24h half-life, platforms update slowly
+
     async def start(self) -> None:
         self._metaculus = await get_metaculus_client()
         self._manifold = ManifoldClient()

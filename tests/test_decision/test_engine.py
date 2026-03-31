@@ -301,17 +301,28 @@ async def test_rotation_sells_weak_position_for_stronger(mock_bus, mock_db):
     event = SignalEvent(signal=signal, market=market)
     await eng.on_signal(event)
 
-    # Should have published 2 trade_decisions: exit for weak + entry for strong
+    # Should have published 1 trade_decision (exit only)
+    # Entry is deferred to _pending_rotation_entries until exit fills
     calls = mock_bus.publish.call_args_list
     trade_decisions = [c for c in calls if c[0][0] == "trade_decision"]
-    assert len(trade_decisions) == 2
-    # First is exit
+    assert len(trade_decisions) == 1
+    # The published decision is the exit
     exit_dec = trade_decisions[0][0][1]
     assert exit_dec.is_exit is True
     assert exit_dec.market_id == "weak_market"
-    # Second is entry
-    entry_dec = trade_decisions[1][0][1]
-    assert entry_dec.market_id == "strong_market"
+    # Entry is queued, not yet published
+    assert "weak_market" in eng._pending_rotation_entries
+    pending_entry = eng._pending_rotation_entries["weak_market"]
+    assert pending_entry.market_id == "strong_market"
+
+    # Simulate exit fill → entry should now publish
+    mock_bus.publish.reset_mock()
+    await eng.on_rotation_exit_filled("weak_market")
+    calls = mock_bus.publish.call_args_list
+    entry_decisions = [c for c in calls if c[0][0] == "trade_decision"]
+    assert len(entry_decisions) == 1
+    assert entry_decisions[0][0][1].market_id == "strong_market"
+    assert "weak_market" not in eng._pending_rotation_entries
 
 
 @pytest.mark.asyncio

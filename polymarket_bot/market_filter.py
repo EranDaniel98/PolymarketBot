@@ -86,6 +86,20 @@ class MarketFilter:
         }
         score += category_scores.get(market.category, 3)
 
+        # Score: fee advantage — prioritize low/zero fee categories
+        fee_scores = {
+            "geopolitics": 20,   # 0% fee = pure edge
+            "politics": 20,      # 0% fee
+            "sports": 10,        # 0.75% low fee
+            "crypto": 5,         # 1% moderate fee
+        }
+        score += fee_scores.get(market.category, 0)
+
+        # Penalize short-duration crypto markets (5-min/15-min) — 3.15% dynamic fees
+        q = market.question.lower()
+        if any(t in q for t in ("5-min", "5 min", "15-min", "15 min", "5min", "15min")):
+            score -= 30
+
         # Score: question length — longer questions tend to be more specific = better for signals
         if len(market.question) > 50:
             score += 5

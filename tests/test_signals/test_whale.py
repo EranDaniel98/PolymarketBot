@@ -93,3 +93,37 @@ async def test_tracked_wallet_lower_threshold(market):
         result = await whale.evaluate(market)
         assert result is not None
         assert result.direction == Direction.YES
+
+
+async def test_no_double_counting_volume(whale, market):
+    """Regression: a maker exceeding both single-trade AND cumulative thresholds
+    should have their volume counted exactly once."""
+    # Single trade of $15K (exceeds $10K single) from one maker
+    # Same maker cumulative is also $15K (below $25K cumulative, so only single triggers)
+    trades = [_make_trade(size=30000, price=0.50, side="BUY", maker="0xwhale")]
+    with patch.object(whale, "_fetch_trades", new_callable=AsyncMock, return_value=trades):
+        result = await whale.evaluate(market)
+        assert result is not None
+        # Volume should be $15K (30000 * 0.50), NOT $30K from double-counting
+        assert "$15,000" in result.reasoning
+        assert "$30,000" not in result.reasoning
+
+
+async def test_no_double_counting_both_thresholds(market):
+    """When a maker hits BOTH single and cumulative thresholds, count once."""
+    whale = WhaleSignal(
+        single_trade_threshold=10000,
+        cumulative_threshold=20000,
+        window_seconds=300,
+    )
+    # 3 trades: first is $15K (single threshold), total is $25K (cumulative threshold)
+    trades = [
+        _make_trade(size=30000, price=0.50, side="BUY", maker="0xbig"),  # $15K
+        _make_trade(size=10000, price=0.50, side="BUY", maker="0xbig"),  # $5K
+        _make_trade(size=10000, price=0.50, side="BUY", maker="0xbig"),  # $5K
+    ]
+    with patch.object(whale, "_fetch_trades", new_callable=AsyncMock, return_value=trades):
+        result = await whale.evaluate(market)
+        assert result is not None
+        # Total should be $25K exactly (all from same maker, counted once)
+        assert "$25,000" in result.reasoning

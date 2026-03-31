@@ -180,6 +180,11 @@ class Database:
             (market_id, since),
         )
 
+    async def get_recent_signals(self, limit: int = 20) -> list[dict]:
+        return await self._fetch_all(
+            "SELECT * FROM signals ORDER BY timestamp DESC LIMIT ?", (limit,),
+        )
+
     # --- Trades ---
 
     async def save_trade(self, trade: TradeExecution) -> None:

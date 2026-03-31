@@ -2,22 +2,53 @@ import logging
 import math
 from datetime import datetime, timedelta, timezone
 
-from polymarket_bot.config import KellyTier, RiskConfig
+from polymarket_bot.config import FeeConfig, KellyTier, RiskConfig
 from polymarket_bot.database import Database
 from polymarket_bot.models import TradeDecision
 
 logger = logging.getLogger(__name__)
 
-# Polymarket fee: ~2% round-trip (maker + taker)
-ROUND_TRIP_FEE = 0.02
+# Default fee categories when no FeeConfig provided (updated March 30, 2026)
+_CATEGORY_FEES: dict[str, float] = {
+    "geopolitics": 0.0,
+    "politics": 0.01,
+    "sports": 0.0075,
+    "crypto": 0.018,
+    "finance": 0.012,
+    "culture": 0.01,
+    "weather": 0.01,
+}
+_DEFAULT_TAKER_FEE = 0.01
 
 
-def half_kelly(p: float, market_price: float, fraction: float = 0.5) -> float:
+def calculate_round_trip_fee(
+    category: str = "",
+    is_maker: bool = False,
+    fee_config: FeeConfig | None = None,
+) -> float:
+    """Calculate round-trip fee based on market category and order type.
+
+    Maker orders: 0% fee (limit orders resting on book).
+    Taker orders: category-dependent, 0% for geopolitics, up to 3.15% for crypto 5-min.
+    """
+    if is_maker:
+        return fee_config.maker_fee if fee_config else 0.0
+    if fee_config and fee_config.category_taker_fees:
+        return fee_config.category_taker_fees.get(
+            category.lower(), fee_config.default_taker_fee
+        )
+    return _CATEGORY_FEES.get(category.lower(), _DEFAULT_TAKER_FEE)
+
+
+def half_kelly(
+    p: float, market_price: float, fraction: float = 0.5, round_trip_fee: float = 0.01,
+) -> float:
     """Kelly criterion for binary outcome markets, with fee adjustment."""
     if market_price <= 0 or market_price >= 1 or p <= 0 or p >= 1:
         return 0.0
-    # Adjust payout odds for round-trip fees, not probability
-    b = (1 - market_price) / market_price * (1 - ROUND_TRIP_FEE)
+    b = (1 - market_price) / market_price * (1 - round_trip_fee)
+    if b <= 0:
+        return 0.0
     full_kelly = (p * b - (1 - p)) / b
     if full_kelly <= 0:
         return 0.0
@@ -46,7 +77,7 @@ def estimate_true_probability(confidence: float, market_price: float) -> float:
 
 class RiskManager:
     def __init__(self, config: RiskConfig, database: Database, bankroll: float,
-                 exit_manager=None):
+                 exit_manager=None, fee_config: FeeConfig | None = None):
         self._config = config
         self._db = database
         self._bankroll = bankroll
@@ -54,6 +85,7 @@ class RiskManager:
         self._recovery_until: datetime | None = None
         self._cooldowns: dict[str, datetime] = {}
         self._exit_manager = exit_manager
+        self._fee_config = fee_config
 
     @property
     def circuit_breaker_active(self) -> bool:
@@ -84,17 +116,22 @@ class RiskManager:
         else:
             return self._config.kelly_fraction
 
-    async def calculate_position_size(self, confidence: float, market_price: float) -> float:
+    async def calculate_position_size(
+        self, confidence: float, market_price: float, category: str = "",
+    ) -> float:
         trade_count = await self._db.get_trade_count()
 
         bootstrap_pct = self._config.bootstrap_size_pct
         bootstrap_limit = self._config.bootstrap_trades
 
+        # Use category-aware fee for Kelly calculation (prefer maker/limit orders)
+        fee = calculate_round_trip_fee(category, is_maker=True, fee_config=self._fee_config)
+
         if trade_count >= bootstrap_limit:
             # Full Kelly sizing with confidence-tiered fraction
             kelly_frac = self._kelly_fraction_for_confidence(confidence)
             p_estimated = estimate_true_probability(confidence, market_price)
-            fraction = half_kelly(p_estimated, market_price, kelly_frac)
+            fraction = half_kelly(p_estimated, market_price, kelly_frac, round_trip_fee=fee)
             size = self._bankroll * fraction
         elif trade_count >= bootstrap_limit // 2:
             # Smooth transition: blend bootstrap and Kelly
@@ -102,7 +139,7 @@ class RiskManager:
             blend = (trade_count - bootstrap_limit // 2) / (bootstrap_limit // 2)
             bootstrap_size = self._bankroll * bootstrap_pct
             p_estimated = estimate_true_probability(confidence, market_price)
-            fraction = half_kelly(p_estimated, market_price, kelly_frac)
+            fraction = half_kelly(p_estimated, market_price, kelly_frac, round_trip_fee=fee)
             kelly_size = self._bankroll * fraction
             size = bootstrap_size * (1 - blend) + kelly_size * blend
         else:
@@ -150,11 +187,14 @@ class RiskManager:
                 return False, (f"Correlated exposure: ${correlated:.2f} + ${decision.amount:.2f} "
                               f"exceeds ${max_correlated:.2f} for category '{decision.category}'")
 
-        # Min edge — check estimated probability vs market, not raw confidence
+        # Min edge — check estimated probability vs market, accounting for fees
         p_est = estimate_true_probability(decision.confidence, market_price)
-        edge = abs(p_est - market_price)
+        raw_edge = abs(p_est - market_price)
+        category = getattr(decision, 'category', '') or ''
+        fee = calculate_round_trip_fee(category, is_maker=False, fee_config=self._fee_config)
+        edge = raw_edge - fee  # Net edge after taker fee
         if edge < self._config.min_edge:
-            return False, f"Insufficient edge: {edge:.1%} < {self._config.min_edge:.1%}"
+            return False, f"Insufficient edge: {raw_edge:.1%} - {fee:.1%} fee = {edge:.1%} < {self._config.min_edge:.1%}"
 
         # Cooldown
         last_exit = self._cooldowns.get(decision.market_id)
@@ -173,7 +213,9 @@ class RiskManager:
                 "approved": True,
                 "reason": "Approved",
                 "amount": decision.amount,
-                "edge": round(edge, 4),
+                "raw_edge": round(raw_edge, 4),
+                "fee": round(fee, 4),
+                "net_edge": round(edge, 4),
                 "estimated_probability": round(p_est, 4),
                 "market_price": market_price,
                 "kelly_fraction": kelly_frac,

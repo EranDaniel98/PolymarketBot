@@ -116,6 +116,24 @@ class FastTraderConfig:
 
 
 @dataclass
+class CryptoPriceSignalConfig:
+    enabled: bool = True
+    weight: float = 0.20
+    min_divergence: float = 0.05
+    exchanges: list[str] | None = None   # default: ["binance"]
+    assets: list[str] | None = None      # default: ["BTC", "ETH", "SOL"]
+    poll_interval: int = 60
+    max_days_to_expiry: int = 7
+
+
+@dataclass
+class FeeConfig:
+    default_taker_fee: float = 0.01
+    maker_fee: float = 0.0
+    category_taker_fees: dict[str, float] | None = None
+
+
+@dataclass
 class SignalsConfig:
     news: NewsSignalConfig = None
     social: SocialSignalConfig = None
@@ -127,6 +145,7 @@ class SignalsConfig:
     weather: WeatherConfig = None
     whale: WhaleSignalConfig = None
     fast_trader: FastTraderConfig = None
+    crypto_price: CryptoPriceSignalConfig = None
 
     def __post_init__(self):
         self.news = self.news or NewsSignalConfig()
@@ -139,6 +158,7 @@ class SignalsConfig:
         self.weather = self.weather or WeatherConfig()
         self.whale = self.whale or WhaleSignalConfig()
         self.fast_trader = self.fast_trader or FastTraderConfig()
+        self.crypto_price = self.crypto_price or CryptoPriceSignalConfig()
 
 
 @dataclass
@@ -266,6 +286,7 @@ class BotConfig:
     arbitrage: ArbitrageConfig = None
     web: WebConfig = None
     logging: LoggingConfig = None
+    fee: FeeConfig = None
 
     def __post_init__(self):
         self.polymarket = self.polymarket or PolymarketConfig()
@@ -278,6 +299,7 @@ class BotConfig:
         self.arbitrage = self.arbitrage or ArbitrageConfig()
         self.web = self.web or WebConfig()
         self.logging = self.logging or LoggingConfig()
+        self.fee = self.fee or FeeConfig()
 
 
 def _dict_to_dataclass(cls, data: dict):
