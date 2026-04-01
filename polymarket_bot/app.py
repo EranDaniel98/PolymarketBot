@@ -609,6 +609,14 @@ async def run_bot(config_path: str = "config.yaml"):
 
                 max_daily_loss = bankroll * config.risk.max_daily_loss_pct
 
+                # LLM cost stats
+                llm_plugin = next((p for p in plugins if p.name == "llm"), None)
+                cost_stats = (
+                    llm_plugin.get_cost_stats()
+                    if llm_plugin and hasattr(llm_plugin, "get_cost_stats")
+                    else None
+                )
+
                 dashboard = build_full_dashboard(
                     positions_data, daily_pnl, total_exp, bankroll,
                     t_count, time.time() - start_time,
@@ -622,6 +630,7 @@ async def run_bot(config_path: str = "config.yaml"):
                     plugin_stats=plugin_stats,
                     max_daily_loss=max_daily_loss,
                     correlated_exposure=correlated_exposure,
+                    cost_stats=cost_stats,
                 )
                 live.update(dashboard)
                 await asyncio.sleep(5)

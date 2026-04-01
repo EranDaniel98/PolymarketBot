@@ -31,7 +31,7 @@ async def test_evaluate_parses_response(llm_signal, market):
     llm_signal._client = mock_client
 
     backend = MagicMock(spec=_ModelBackend)
-    backend.query = AsyncMock(return_value='{"probability": 0.65, "confidence": 0.8, "reasoning": "Strong AI progress"}')
+    backend.query = AsyncMock(return_value=('{"probability": 0.65, "confidence": 0.8, "reasoning": "Strong AI progress"}', {"input_tokens": 500, "output_tokens": 100}))
     backend.provider = "anthropic"
     backend.model = "claude-test"
     backend.weight = 1.0
@@ -71,7 +71,7 @@ async def test_evaluate_low_confidence_returns_none(llm_signal, market):
     """When LLM reports low self-confidence, signal should be filtered out."""
     llm_signal._client = MagicMock()
     backend = MagicMock(spec=_ModelBackend)
-    backend.query = AsyncMock(return_value='{"probability": 0.40, "confidence": 0.1, "reasoning": "Uncertain"}')
+    backend.query = AsyncMock(return_value=('{"probability": 0.40, "confidence": 0.1, "reasoning": "Uncertain"}', {"input_tokens": 500, "output_tokens": 50}))
     backend.provider = "anthropic"
     backend.model = "test"
     backend.weight = 1.0
@@ -109,7 +109,7 @@ async def test_screening_passes_interesting_markets(llm_signal, market):
     llm_signal._client = MagicMock()
 
     backend = MagicMock(spec=_ModelBackend)
-    backend.query = AsyncMock(return_value='{"probability": 0.65, "confidence": 0.7, "reasoning": "Analysis"}')
+    backend.query = AsyncMock(return_value=('{"probability": 0.65, "confidence": 0.7, "reasoning": "Analysis"}', {"input_tokens": 500, "output_tokens": 100}))
     backend.provider = "anthropic"
     backend.model = "claude-test"
     backend.weight = 1.0
@@ -140,13 +140,13 @@ async def test_ensemble_queries_multiple_backends(market):
     )
 
     backend1 = MagicMock(spec=_ModelBackend)
-    backend1.query = AsyncMock(return_value='{"probability": 0.65, "confidence": 0.7, "reasoning": "A"}')
+    backend1.query = AsyncMock(return_value=('{"probability": 0.65, "confidence": 0.7, "reasoning": "A"}', {"input_tokens": 400, "output_tokens": 80}))
     backend1.provider = "anthropic"
     backend1.model = "claude-test"
     backend1.weight = 0.5
 
     backend2 = MagicMock(spec=_ModelBackend)
-    backend2.query = AsyncMock(return_value='{"probability": 0.70, "confidence": 0.8, "reasoning": "B"}')
+    backend2.query = AsyncMock(return_value=('{"probability": 0.70, "confidence": 0.8, "reasoning": "B"}', {"input_tokens": 400, "output_tokens": 80}))
     backend2.provider = "anthropic"
     backend2.model = "claude-test2"
     backend2.weight = 0.5
@@ -182,7 +182,7 @@ async def test_ensemble_graceful_degradation(market):
     signal = LLMSignal(api_key="test", ensemble_enabled=True)
 
     backend_ok = MagicMock(spec=_ModelBackend)
-    backend_ok.query = AsyncMock(return_value='{"probability": 0.65, "confidence": 0.7, "reasoning": "OK"}')
+    backend_ok.query = AsyncMock(return_value=('{"probability": 0.65, "confidence": 0.7, "reasoning": "OK"}', {"input_tokens": 500, "output_tokens": 100}))
     backend_ok.provider = "anthropic"
     backend_ok.model = "ok-model"
     backend_ok.weight = 0.5
@@ -237,7 +237,7 @@ async def test_legacy_single_model_unchanged(market):
     signal = LLMSignal(api_key="test", ensemble_enabled=False)
 
     backend = MagicMock(spec=_ModelBackend)
-    backend.query = AsyncMock(return_value='{"probability": 0.65, "confidence": 0.8, "reasoning": "Solo"}')
+    backend.query = AsyncMock(return_value=('{"probability": 0.65, "confidence": 0.8, "reasoning": "Solo"}', {"input_tokens": 500, "output_tokens": 100}))
     backend.provider = "anthropic"
     backend.model = "claude-test"
     backend.weight = 1.0
@@ -322,7 +322,7 @@ async def test_circuit_breaker_resets_on_success(llm_signal, market):
     llm_signal._circuit_open_until = None  # Expired
 
     backend = MagicMock(spec=_ModelBackend)
-    backend.query = AsyncMock(return_value='{"probability": 0.65, "confidence": 0.7, "reasoning": "OK"}')
+    backend.query = AsyncMock(return_value=('{"probability": 0.65, "confidence": 0.7, "reasoning": "OK"}', {"input_tokens": 500, "output_tokens": 100}))
     backend.provider = "anthropic"
     backend.model = "test"
     backend.weight = 1.0

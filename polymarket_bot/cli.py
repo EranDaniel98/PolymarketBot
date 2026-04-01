@@ -378,6 +378,43 @@ def _build_risk_panel(
     )
 
 
+def _build_cost_panel(cost_stats: dict | None) -> Panel:
+    """LLM API cost tracking panel."""
+    if not cost_stats:
+        return Panel(
+            f"[{COLOR_SCHEME['muted']}]No LLM data yet[/]",
+            title="[bold yellow]LLM Costs[/]", border_style="yellow", padding=(0, 1),
+        )
+
+    lines = []
+    model = cost_stats.get("model", "?")
+    total_cost = cost_stats.get("estimated_cost", 0)
+    cost_hr = cost_stats.get("cost_per_hour", 0)
+    lines.append(f"[bold]Model:[/]    [cyan]{model}[/]")
+    lines.append(f"[bold]Cost:[/]     ${total_cost:.4f} (${cost_hr:.4f}/hr)")
+
+    inp = cost_stats.get("input_tokens", 0)
+    out = cost_stats.get("output_tokens", 0)
+    lines.append(f"[bold]Tokens:[/]   {inp:,} in / {out:,} out")
+
+    total = cost_stats.get("total_calls", 0)
+    screen = cost_stats.get("screening_calls", 0)
+    deep = cost_stats.get("deep_calls", 0)
+    cache = cost_stats.get("cache_hits", 0)
+    lines.append(f"[bold]Calls:[/]    {total} ({screen} screen, {deep} deep)")
+    lines.append(f"[bold]Cache:[/]    {cache} hits")
+
+    daily = cost_hr * 24
+    monthly = daily * 30
+    cost_color = "green" if monthly < 10 else "yellow" if monthly < 50 else "red"
+    lines.append(f"[bold]Projected:[/] [{cost_color}]${daily:.2f}/day, ${monthly:.1f}/mo[/]")
+
+    return Panel(
+        "\n".join(lines),
+        title="[bold yellow]LLM Costs[/]", border_style="yellow", padding=(0, 1),
+    )
+
+
 def build_full_dashboard(
     positions: list[dict], pnl: float, exposure: float, bankroll: float,
     trade_count: int, uptime_seconds: float, paper_mode: bool,
@@ -390,6 +427,7 @@ def build_full_dashboard(
     plugin_stats: list[dict] | None = None,
     max_daily_loss: float = 0.0,
     correlated_exposure: dict[str, float] | None = None,
+    cost_stats: dict | None = None,
 ) -> Group:
     """Build the full multi-panel CLI dashboard."""
 
@@ -402,7 +440,7 @@ def build_full_dashboard(
     # Positions table (main content)
     positions_panel = _build_positions_table(positions)
 
-    # Bottom row: signals + plugins + risk (side by side)
+    # Bottom row: signals + plugins + risk + cost (side by side)
     signals = _build_signals_panel(recent_signals or [])
     plugins = _build_plugin_status_panel(plugin_stats or [])
     trades = _build_recent_trades_panel(recent_trades or [])
@@ -410,10 +448,11 @@ def build_full_dashboard(
         exposure, bankroll, pnl, max_daily_loss,
         circuit_breaker, recovery, correlated_exposure,
     )
+    cost = _build_cost_panel(cost_stats)
 
     # Use Columns for side-by-side layout
     bottom_left = Group(signals, trades)
-    bottom_right = Group(plugins, risk)
+    bottom_right = Group(plugins, risk, cost)
 
     return Group(
         status,

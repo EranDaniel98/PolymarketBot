@@ -73,7 +73,8 @@ class _ModelBackend:
     weight: float
     client: object  # AsyncAnthropic or AsyncOpenAI
 
-    async def query(self, system_prompt: str, user_prompt: str) -> str:
+    async def query(self, system_prompt: str, user_prompt: str) -> tuple[str, dict]:
+        """Returns (response_text, usage_dict) with token counts."""
         if self.provider == "anthropic":
             response = await self.client.messages.create(
                 model=self.model,
@@ -81,7 +82,11 @@ class _ModelBackend:
                 system=system_prompt,
                 messages=[{"role": "user", "content": user_prompt}],
             )
-            return response.content[0].text
+            usage = {"input_tokens": 0, "output_tokens": 0}
+            if hasattr(response, "usage") and response.usage:
+                usage["input_tokens"] = response.usage.input_tokens
+                usage["output_tokens"] = response.usage.output_tokens
+            return response.content[0].text, usage
         elif self.provider == "openai":
             response = await self.client.chat.completions.create(
                 model=self.model,
@@ -91,7 +96,11 @@ class _ModelBackend:
                     {"role": "user", "content": user_prompt},
                 ],
             )
-            return response.choices[0].message.content
+            usage = {"input_tokens": 0, "output_tokens": 0}
+            if response.usage:
+                usage["input_tokens"] = response.usage.prompt_tokens or 0
+                usage["output_tokens"] = response.usage.completion_tokens or 0
+            return response.choices[0].message.content, usage
         raise ValueError(f"Unknown provider: {self.provider}")
 
 
@@ -178,6 +187,16 @@ class LLMSignal(SignalPlugin):
         # Per-market result cache: market_id → (cached_price, timestamp, signal_or_none)
         self._result_cache: dict[str, tuple[float, float, Signal | None]] = {}
         self._max_llm_markets: int = 15  # Only evaluate top-N markets by filter rank
+        # Token usage tracking
+        self._usage_stats = {
+            "total_input_tokens": 0,
+            "total_output_tokens": 0,
+            "total_calls": 0,
+            "screening_calls": 0,
+            "deep_calls": 0,
+            "cache_hits": 0,
+            "started_at": 0.0,  # Set in start()
+        }
 
     def _check_circuit(self) -> bool:
         """Return True if circuit is open (should skip evaluation)."""
@@ -207,6 +226,35 @@ class LLMSignal(SignalPlugin):
         self._consecutive_failures = 0
         self._circuit_open_until = None
 
+    # Token pricing per million tokens (USD)
+    _PRICING = {
+        "gpt-4o-mini": {"input": 0.15, "output": 0.60},
+        "gpt-4o": {"input": 2.50, "output": 10.00},
+        "claude-sonnet-4-20250514": {"input": 3.00, "output": 15.00},
+        "claude-3-haiku-20240307": {"input": 0.25, "output": 1.25},
+    }
+
+    def get_cost_stats(self) -> dict:
+        """Return current token usage stats with estimated cost."""
+        import time as _time
+        s = self._usage_stats
+        pricing = self._PRICING.get(self._model, {"input": 0.15, "output": 0.60})
+        input_cost = s["total_input_tokens"] / 1_000_000 * pricing["input"]
+        output_cost = s["total_output_tokens"] / 1_000_000 * pricing["output"]
+        elapsed_hours = max((_time.time() - s["started_at"]) / 3600, 0.01)
+        total_cost = input_cost + output_cost
+        return {
+            "input_tokens": s["total_input_tokens"],
+            "output_tokens": s["total_output_tokens"],
+            "total_calls": s["total_calls"],
+            "screening_calls": s["screening_calls"],
+            "deep_calls": s["deep_calls"],
+            "cache_hits": s["cache_hits"],
+            "estimated_cost": round(total_cost, 4),
+            "cost_per_hour": round(total_cost / elapsed_hours, 4),
+            "model": self._model,
+        }
+
     @property
     def name(self) -> str:
         return "llm"
@@ -231,6 +279,8 @@ class LLMSignal(SignalPlugin):
         return True
 
     async def start(self) -> None:
+        import time as _time
+        self._usage_stats["started_at"] = _time.time()
         self._client = anthropic.AsyncAnthropic(api_key=self._api_key, max_retries=0)
         self._http = httpx.AsyncClient(
             timeout=15,
@@ -296,6 +346,9 @@ class LLMSignal(SignalPlugin):
                     messages=[{"role": "user", "content": prompt}],
                 )
                 text = response.choices[0].message.content.strip().upper()
+                if response.usage:
+                    self._usage_stats["total_input_tokens"] += response.usage.prompt_tokens or 0
+                    self._usage_stats["total_output_tokens"] += response.usage.completion_tokens or 0
             else:
                 response = await self._client.messages.create(
                     model=self._screening_model,
@@ -303,6 +356,11 @@ class LLMSignal(SignalPlugin):
                     messages=[{"role": "user", "content": prompt}],
                 )
                 text = response.content[0].text.strip().upper()
+                if hasattr(response, "usage") and response.usage:
+                    self._usage_stats["total_input_tokens"] += response.usage.input_tokens
+                    self._usage_stats["total_output_tokens"] += response.usage.output_tokens
+            self._usage_stats["screening_calls"] += 1
+            self._usage_stats["total_calls"] += 1
             return text.startswith("YES") or text.startswith("MAYBE")
         except Exception:
             logger.debug("LLM screening failed, skipping market")
@@ -322,6 +380,7 @@ class LLMSignal(SignalPlugin):
             price_moved = abs(market.current_price - cached_price) / max(cached_price, 0.01)
             age_minutes = (_time.time() - cached_ts) / 60
             if price_moved < 0.03 and age_minutes < 360:
+                self._usage_stats["cache_hits"] += 1
                 return cached_signal
 
         try:
@@ -371,7 +430,7 @@ class LLMSignal(SignalPlugin):
                 return_exceptions=True,
             )
 
-            # Parse responses, filter failures
+            # Parse responses, filter failures, track usage
             parsed_results = []
             parsed_weights = []
             for i, result in enumerate(raw_results):
@@ -379,7 +438,13 @@ class LLMSignal(SignalPlugin):
                     logger.warning("Backend %s/%s failed: %s",
                                    self._backends[i].provider, self._backends[i].model, result)
                     continue
-                parsed = _parse_llm_response(result)
+                # query() returns (text, usage_dict)
+                text, usage = result
+                self._usage_stats["total_input_tokens"] += usage.get("input_tokens", 0)
+                self._usage_stats["total_output_tokens"] += usage.get("output_tokens", 0)
+                self._usage_stats["deep_calls"] += 1
+                self._usage_stats["total_calls"] += 1
+                parsed = _parse_llm_response(text)
                 if parsed:
                     parsed_results.append(parsed)
                     parsed_weights.append(self._backends[i].weight)
