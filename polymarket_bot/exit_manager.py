@@ -174,12 +174,14 @@ class ExitManager:
         if pos.end_date:
             now = datetime.now(timezone.utc)
             days_remaining = max((pos.end_date - now).total_seconds() / 86400, 0.1)
-            if days_remaining < 3:
-                # Near resolution: ride winners (widen TP), but tighten SL
-                take_profit = 0.50  # Let it run to settlement
-                stop_loss = max(stop_loss, -0.08)  # Cut losers faster
-                logger.debug("Near-resolution exits for %s: TP=%.0f%% SL=%.0f%%",
-                            pos.market_id, take_profit * 100, stop_loss * 100)
+            if days_remaining < 7:
+                # Near resolution: DISABLE take-profit to capture full binary payoff.
+                # Prediction markets resolve to $0 or $1 — exiting a winner at +45%
+                # leaves the entire resolution payoff on the table.
+                take_profit = float("inf")  # Never TP — hold to resolution
+                stop_loss = max(stop_loss, -0.08)  # But still cut losers faster
+                logger.debug("Near-resolution: holding %s to resolution (SL=%.0f%%)",
+                            pos.market_id, stop_loss * 100)
 
         # Take profit
         if pnl_pct >= take_profit:

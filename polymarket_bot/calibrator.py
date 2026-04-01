@@ -6,13 +6,14 @@ from polymarket_bot.database import Database
 logger = logging.getLogger(__name__)
 
 DEFAULT_WEIGHTS = {
-    "llm": 0.25,
+    "weather": 0.30,
+    "crypto_price": 0.30,
     "favorite_longshot": 0.20,
-    "weather": 0.20,
-    "crypto_price": 0.20,
     "divergence": 0.15,
-    "polls": 0.10,
     "bookmaker": 0.10,
+    "whale": 0.10,
+    "llm": 0.05,
+    "polls": 0.05,
 }
 
 

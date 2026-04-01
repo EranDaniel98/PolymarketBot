@@ -89,9 +89,10 @@ class MarketFilter:
         # Score: fee advantage — prioritize low/zero fee categories
         fee_scores = {
             "geopolitics": 20,   # 0% fee = pure edge
-            "politics": 20,      # 0% fee
-            "sports": 10,        # 0.75% low fee
-            "crypto": 5,         # 1% moderate fee
+            "politics": 10,      # 1% fee (changed March 30)
+            "sports": 8,         # 0.75% low fee
+            "crypto": 3,         # 1.8% high fee
+            "weather": 15,       # 1.25% fee but highest documented edge
         }
         score += fee_scores.get(market.category, 0)
 
@@ -99,6 +100,17 @@ class MarketFilter:
         q = market.question.lower()
         if any(t in q for t in ("5-min", "5 min", "15-min", "15 min", "5min", "15min")):
             score -= 30
+
+        # Penalize multi-outcome sports futures (championship winner markets)
+        # These are maximally efficient — FLB fires on ALL 20+ teams, no real edge
+        if any(kw in q for kw in ("win the 20", "stanley cup", "nba finals", "super bowl",
+                                   "world series", "champions league", "world cup winner")):
+            if p < 0.15:  # Longshot in a championship market
+                score -= 25
+
+        # Boost weather markets — strongest documented edge (73% win rate)
+        if market.category == "weather" or any(kw in q for kw in ("temperature", "temp", "degrees", "fahrenheit")):
+            score += 15
 
         # Score: question length — longer questions tend to be more specific = better for signals
         if len(market.question) > 50:

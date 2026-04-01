@@ -20,7 +20,7 @@ signals:
     weight: 0.10
   llm:
     enabled: true
-    weight: 0.20
+    weight: 0.15
     model: "gpt-4o-mini"
     screening_model: "gpt-4o-mini"
     anthropic_api_key: ""  # Set via ANTHROPIC_API_KEY env var
@@ -37,7 +37,7 @@ signals:
     weight: 0.20
     min_price_short: 0.92
     max_price_long: 0.08
-    min_volume: 5000
+    min_volume: 50000
     min_days: 3
   divergence:
     enabled: true
@@ -47,7 +47,7 @@ signals:
     min_days: 3
   weather:
     enabled: true
-    weight: 0.20
+    weight: 0.30
   whale:
     enabled: true
     weight: 0.15
@@ -57,7 +57,7 @@ signals:
     window_seconds: 300
   crypto_price:
     enabled: true
-    weight: 0.20
+    weight: 0.30
     min_divergence: 0.05
     exchanges: ["binance"]
     poll_interval: 60
@@ -98,7 +98,7 @@ risk:
       fraction: 0.45
   bootstrap_trades: 30
   bootstrap_size_pct: 0.02
-  min_trade_size: 5.0
+  min_trade_size: 10.0
   cooldown_seconds: 300
 
 execution:
@@ -106,7 +106,7 @@ execution:
   max_slippage: 0.01
   max_retries: 3
   paper_trading: true
-  paper_balance: 300.0
+  paper_balance: 1000.0
 
 exit:
   take_profit: 0.45
@@ -135,7 +135,8 @@ logging:
   backup_count: 5
 
 confidence_thresholds:
-  auto_execute: 0.80
+  auto_execute: 0.65
+  min_signal_sources: 1
   notify: 0.50
   auto_approve_all: true
 
