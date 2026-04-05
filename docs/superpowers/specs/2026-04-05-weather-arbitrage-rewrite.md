@@ -1,6 +1,7 @@
 # Polymarket Weather Arbitrage System — Design Spec
 
 **Date:** 2026-04-05
+**Updated:** 2026-04-05 (v2 — incorporates 20-agent review)
 **Status:** Approved
 **Approach:** Full rewrite — new weather core, adapted peripherals (Approach C)
 
@@ -638,3 +639,349 @@ Position Manager <── trades + CLOB API ────────┘
 | Deployment | Docker Compose (app + PostgreSQL) |
 | Secrets | .env + python-dotenv |
 | Logging | structlog -> JSON |
+
+---
+
+## 15. Review Corrections (v2 — 20-agent review)
+
+All findings below override the corresponding sections above. These are organized by severity.
+
+### 15.1 SPEC-BREAKING: Multi-Outcome Markets
+
+Polymarket weather markets are **NOT binary above/below**. They are **multi-outcome events with discrete 2°F/2°C temperature buckets**:
+
+```
+Event: "NYC High Temperature April 15"
+  Market 1: "...between 35 and 39°F?" → YES/NO (conditionId: 0xaaa)
+  Market 2: "...between 40 and 44°F?" → YES/NO (conditionId: 0xbbb)
+  Market 3: "...between 45 and 49°F?" → YES/NO (conditionId: 0xccc)
+  Market 4: "...50°F or above?"        → YES/NO (conditionId: 0xddd)
+  Market 5: "...34°F or below?"        → YES/NO (conditionId: 0xeee)
+```
+
+**Impact on design:**
+- `poly_markets` table needs `event_id VARCHAR(100)` and `group_id VARCHAR(100)` columns to link sibling markets
+- The Mismatch Detector must operate on **event groups**, not individual markets: compute P(temp in each range) from the forecast distribution, compare each range's probability against its market price
+- Sum-to-one validation: all range prices within an event should sum to ~1.0; significant deviation = structural mispricing opportunity
+- Hedging: buy the forecasted range, optionally short adjacent ranges
+- Risk: `max_exposure_per_city_usdc` applies to the **event group**, not individual range markets
+
+### 15.2 SPEC-BREAKING: TAF Has No Temperature for US Cities
+
+**US NWS TAFs contain NO temperature forecasts.** The 0.6 METAR / 0.4 TAF blend for the 6-30h window is fundamentally broken for US cities (the majority of Polymarket weather markets).
+
+International TAFs include only TX/TN (daily max/min), not hourly temperatures. These are insufficient for the spec's probability calculation.
+
+**Revised forecast regimes:**
+
+| Hours to resolution | Old spec | Corrected |
+|---------------------|----------|-----------|
+| 0-6h | METAR trend only | **METAR trend only** (unchanged) |
+| 6-12h | 0.6 METAR + 0.4 TAF | **METAR trend (decaying weight) + NWP ensemble (increasing weight)**. E.g., 0.8/0.2 at 6h → 0.3/0.7 at 12h |
+| 12-30h | 0.6 METAR + 0.4 TAF | **NWP ensemble primary**. METAR trend is useless at 24h+ (diurnal cycle dominates) |
+| 30h-7d | NWP ensemble | **NWP ensemble** (unchanged) |
+
+TAF remains in the system for: (a) non-temperature weather markets (precipitation/wind), (b) sanity-checking NWP output, (c) future expansion.
+
+### 15.3 SPEC-BREAKING: NWP Probability Conversion
+
+The spec says "ensemble mean = probability estimate." **This is fundamentally wrong.** NWP models output **temperature point forecasts**, not probabilities. You cannot use the mean of 3 temperatures as a probability.
+
+**Corrected approach:**
+
+1. Get forecast temperature distribution: either from Open-Meteo `/v1/ensemble` endpoint (51 ECMWF members), or from multiple deterministic models
+2. Compute sigma (uncertainty): `sigma = f(lead_time, ensemble_spread, historical_RMSE)`
+3. Assume distribution: **Student's t-distribution with df=5-7** (better tail behavior than normal for weather)
+4. Compute probability via CDF: `P(temp in range [a,b]) = F_t((b - forecast_mean) / sigma) - F_t((a - forecast_mean) / sigma)`
+
+**Use Open-Meteo `/v1/ensemble` endpoint** (NOT the deterministic `/v1/forecast`):
+- ECMWF ENS: 51 ensemble members → real probability distribution
+- Endpoint: `https://api.open-meteo.com/v1/ensemble`
+- Each member produces an independent temperature forecast
+- Spread directly provides uncertainty, no RMSE lookup needed
+
+Add RMSE lookup table to config for fallback:
+```yaml
+forecast:
+  rmse_by_horizon:
+    6h: 1.5    # degrees C
+    12h: 2.0
+    24h: 2.5
+    48h: 3.0
+    72h: 3.5
+    120h: 4.0
+    168h: 4.5
+  distribution_df: 7  # Student's t degrees of freedom
+```
+
+### 15.4 SPEC-BREAKING: Resolution Source
+
+Polymarket resolves temperature markets via **Weather Underground** (station data), NOT NOAA. The system must:
+- Track the resolution source per market from the Gamma API `resolutionSource` field
+- Calibrate forecasts against Weather Underground readings, not just raw METAR
+- Note: WU data can diverge from METAR (documented cases of discrepancies in Shenzhen)
+
+### 15.5 SPEC-BREAKING: METAR API Field Names
+
+All field names in the spec are wrong. Actual aviationweather.gov JSON:
+
+| Spec says | Actual field | Type | Notes |
+|-----------|-------------|------|-------|
+| `temp_c` | `temp` | float | Celsius |
+| `dewpoint_c` | `dewp` | float | Celsius |
+| `altim_hpa` | `altim` | float | hPa |
+| `wind_speed_kt` | `wspd` | int | Knots |
+| `visibility_m` | `visib` | string | **Statute miles, NOT meters**. Can be `"10+"` |
+| `obs_time` | `obsTime` | int | **Unix epoch**, not ISO string |
+
+Additional fields to store (critical for temperature forecasting):
+- `wdir` (int) — wind direction degrees, affects temperature advection
+- `wgst` (int|null) — wind gust knots
+- `clouds` (array) — `[{"cover": "BKN", "base": 60}]` — **most important missing field** for temperature forecasting (cloud cover suppresses diurnal range)
+- `wxString` (string|null) — weather phenomena (rain, fog, snow)
+- `slp` (float) — sea level pressure
+- `metarType` (string) — METAR vs SPECI (special reports triggered by weather changes)
+
+**Remarks T-group** (`Txxxxxxxx` in `rawOb`): provides temperature to **0.1°C precision** vs 1°C in the main body. Must parse this — 10x better resolution for trend detection.
+
+Update `metar_readings` schema:
+```sql
+ADD COLUMN wind_dir_deg     INT
+ADD COLUMN wind_gust_kt     INT
+ADD COLUMN cloud_cover      JSONB        -- [{cover, base}]
+ADD COLUMN wx_string        VARCHAR(50)
+ADD COLUMN slp_hpa          DECIMAL(6,1)
+ADD COLUMN metar_type       VARCHAR(10)  -- METAR or SPECI
+ADD COLUMN temp_precise_c   DECIMAL(5,1) -- From remarks T-group (0.1C resolution)
+-- Rename visibility_m to visib_sm (statute miles, stored as text)
+```
+
+### 15.6 SPEC-BREAKING: Kelly Criterion Formulas
+
+**EV formula is wrong:**
+- Spec: `ev = edge * (1 - market_price)` — INCORRECT
+- Correct: `ev = edge` (EV per dollar wagered)
+
+**NO-side Kelly missing:**
+- YES side: `kelly_f = (our_p - market_price) / (1 - market_price)` ✓
+- NO side: `kelly_f = (market_price - our_p) / market_price`
+
+**Edge case capping needed:**
+- Clamp `market_price` to `[0.05, 0.95]` for Kelly calculations
+- Cap `raw_kelly` at 0.25 before fractional multiplier
+
+**Fee adjustment missing:**
+- For YES: `b = (1 - market_price) / market_price * (1 - fee)`
+- Incorporate fee into the odds before Kelly calculation
+
+### 15.7 Missing Risk Parameters
+
+Add to `risk` config section:
+```yaml
+risk:
+  max_total_exposure_usdc: 600    # CRITICAL — prevents 20*$50 = full bankroll
+  max_exposure_per_region_usdc: 250  # Geographic correlation (NYC/Newark/Philly)
+  cooldown_after_exit_seconds: 1800  # One METAR cycle between re-entry
+  bootstrap_trades: 50              # Conservative fixed sizing while model unproven
+  bootstrap_size_usdc: 10           # $10/trade during learning phase
+  max_forecast_age_minutes: 30      # Reject stale probabilities
+  drawdown_recovery_mode: "auto"    # auto | manual
+  drawdown_recovery_hours: 4
+  drawdown_recovery_sizing_pct: 0.50
+```
+
+Tiered `min_edge` by forecast source:
+```yaml
+edge:
+  min_edge_metar: 0.06        # Sensor data edge — tighter spreads expected
+  min_edge_blend: 0.08        # Transitional window
+  min_edge_nwp: 0.12          # NWP ensemble — need larger margin
+  min_liquidity_usdc: 200     # 200 for paper trading (raise to 500 for live)
+  cancel_before_resolution_minutes: 120  # Increased from 90
+```
+
+Add regions to `cities.json`:
+```json
+{
+  "city_aliases": ["new york", "nyc"],
+  "stations": ["KJFK", "KLGA", "KEWR"],
+  "primary_station": "KJFK",
+  "region": "northeast_us",
+  "country": "US",
+  "lat": 40.6413,
+  "lon": -73.7781
+}
+```
+
+### 15.8 Open-Meteo API Corrections
+
+- Model name: `gfs` → `gfs_seamless`
+- Use `/v1/ensemble` endpoint for probability calculation (51 ECMWF members)
+- Multi-model in one request: `?models=gfs_seamless,ecmwf_ifs025,icon_global`
+- Rate sub-limits: 5,000/hour, 600/minute (not just 10k/day)
+- ECMWF horizon: 10 days (not 16). ICON: 7.5 days. Only GFS reaches 16.
+- Response uses model-prefixed field names when multiple models requested: `temperature_2m_gfs_seamless`
+
+### 15.9 Gamma API Corrections
+
+- Weather tags are **numeric IDs**, not strings. Must call `GET /tags` first to discover tag IDs
+- Use `/events` endpoint (not `/markets`) for discovery — groups related markets together
+- `clobTokenIds` is a JSON-encoded string, not separate fields
+- Use `tag_slug` on `/events` for string-based filtering (alternative to numeric `tag_id`)
+- Config change:
+```yaml
+markets:
+  discovery_endpoint: "/events"   # Not /markets
+  weather_tag_discovery: true     # Auto-discover tag IDs via GET /tags
+  fallback_keywords: ["temperature", "weather", "degrees", "high temp"]
+```
+
+### 15.10 Database Index Additions
+
+Add these indexes (missing from original spec):
+
+| Table | Index | Rationale |
+|-------|-------|-----------|
+| `metar_readings` | **UNIQUE** `(station_id, observed_at)` | Enforce dedup at DB level, enable upserts |
+| `trades` | `(status, placed_at)` | Position manager queries open trades constantly |
+| `trades` | `(opportunity_id)` | FK lookups for PnL reporting |
+| `opportunities` | `(market_id, detected_at)` | Duplicate detection |
+| `opportunities` | PARTIAL `WHERE traded = false` on `(traded)` | Dashboard live opportunities |
+| `forecast_snapshots` | `(station_id, created_at)` | Latest snapshot per station |
+| `edge_calibration` | `(forecast_source, resolved_at)` | Calibration grouping |
+| `poly_markets` | PARTIAL `WHERE status = 'active'` on `(status)` | Most queries filter active only |
+| `city_icao_mapping` | `(city_pattern)` | Lookup on every parse |
+| `system_events` | `(severity, created_at)` | Dashboard filtering |
+
+### 15.11 Edge Calibration Enhancements
+
+**Daily calibration job outputs:** Brier score, ECE, Resolution, Log Loss, Sharpness — per forecast_source and global.
+
+**Correction mechanism:** Isotonic regression per forecast_source (not Platt scaling). Requires 50+ samples to activate. Clamp correction to +/-0.15. Config flag to disable.
+
+**Additional columns for `edge_calibration`:**
+- `station_id VARCHAR(10)` — denormalized for query efficiency
+- `hours_to_resolution DECIMAL(6,1)` — at time of prediction
+- `month SMALLINT` — for seasonal analysis
+- `edge_at_entry DECIMAL(5,4)` — our_p - market_p at trade time
+- `calibrated_p DECIMAL(5,4)` — post-correction probability
+
+Add calibration config:
+```yaml
+calibration:
+  lookback_days: 30
+  min_samples_for_reporting: 30
+  min_samples_for_correction: 50
+  min_samples_per_bin: 10
+  apply_correction: false     # Enable manually once enough data
+  max_correction: 0.15        # Clamp adjustment
+```
+
+### 15.12 Market Parser Improvements
+
+**Expand regex patterns** from 6 to ~18, covering:
+- "X degrees Fahrenheit or above/below" (Polymarket's actual format)
+- Negative temperatures (`-5°F`)
+- Decimal thresholds (`32.5`)
+- Named thresholds (`freezing` = 32°F/0°C, `boiling` = 212°F/100°C)
+- Multiple unit spellings ("Fahrenheit", "F", "°F", "degrees F")
+
+**Use API `endDate` as primary resolution date** — do not rely on regex date extraction.
+
+**Add `event_id` to `poly_markets`** for multi-outcome grouping.
+
+**LLM fallback** for ~5-10% parse failure tail:
+- Cheap model (GPT-4o-mini / Haiku) for structured extraction
+- Cache results by question text
+- Track regex-fail rate in `system_events`
+
+**Normalize internally to Celsius** since METAR data is in C. Convert market thresholds from F to C for comparison.
+
+### 15.13 APScheduler 4.x
+
+Use `AsyncScheduler` (APScheduler 4.x), NOT `AsyncIOScheduler` (3.x):
+- `CoalescePolicy.latest` for overlap protection
+- `CronTrigger` for daily jobs (parsed from config time strings)
+- `JobReleased` event subscriber for error handling → Telegram alerts
+- **Combine `market_scan` + `mismatch_detection`** into one sequential job (both 5-min interval)
+- DB-backed opportunity queue via `opportunities` table (not in-memory `asyncio.Queue`)
+- Optional: `SQLAlchemyDataStore` for schedule persistence across restarts
+
+### 15.14 Frontend Stack
+
+| Concern | Library |
+|---------|---------|
+| UI components | **shadcn/ui** (Radix + Tailwind) |
+| Charts | **Recharts** (via shadcn/ui Chart component) |
+| Server state / polling | **TanStack Query v5** (`refetchInterval`) |
+| Tables | **TanStack Table v8** (via shadcn/ui DataTable) |
+| Forms | **React Hook Form + Zod** (via shadcn/ui Form) |
+| Client state | `useState`/`useContext` (add Zustand if needed) |
+
+### 15.15 FastAPI Patterns
+
+- **Shared `async_sessionmaker` factory** — each endpoint and scheduled job gets its own `AsyncSession`
+- **Hot-reload config:** `PUT /api/config` writes to DB, publishes `config_changed` on EventBus, RiskManager subscribes and reloads
+- **WebSocket endpoint** `ws://localhost:8080/ws/live` for real-time dashboard data (backed by EventBus subscriptions)
+- **SPA serving:** `app.mount("/", StaticFiles(directory="frontend/dist", html=True))` after API routes
+- **Pydantic models** for all request/response validation
+- **CORS** only in dev mode (Vite proxy preferred)
+
+### 15.16 Security
+
+**CRITICAL — Rotate all API keys.** Existing `config.yaml` has plaintext secrets that may be in git history.
+
+Requirements for the new system:
+- All secrets in `.env` only (never in YAML). Actually call `load_dotenv()` in `app.py`
+- Ship `.env.example` with all variable names (empty values)
+- `DATABASE_URL` in env vars, never in YAML
+- Extend `_SecretStr` to all secret fields (or use `pydantic.SecretStr`)
+- **Dashboard auth mandatory** — refuse to start web server without `DASH_PASS`
+- Add CSRF protection on write endpoints (`PUT /api/config`, `PUT /api/cities`)
+- Add structlog processor to scrub secret patterns from logs
+- Docker: use `env_file`, add `.env` to `.dockerignore`
+
+### 15.17 METAR Trend Model Improvement
+
+Linear extrapolation is fragile — the diurnal temperature cycle is sinusoidal. Improvements:
+- Fit a sinusoidal/spline model rather than linear
+- Weight recent observations more heavily (exponential weighting)
+- Include cloud cover as a feature (overcast suppresses cooling/heating)
+- Detect regime changes (SPECI reports signal rapid weather shifts)
+- Use pressure tendency from remarks to detect approaching fronts
+- Require minimum 24h of readings before producing forecasts for a station
+
+### 15.18 py-clob-client Notes
+
+- `get_balance_allowance()` must pass `BalanceAllowanceParams()` (not called with no args)
+- Batch APIs available: `get_prices()`, `get_midpoints()` for bulk price fetching — use in market_scan job
+- Heartbeat mechanism (`post_heartbeat()`) available for safety — auto-cancels all orders if heartbeat missed
+- SDK is v0.34.6, all methods used by ExecutionEngine are confirmed present
+
+### 15.19 Carry-Forward Code Map
+
+| Module | Action | Key methods to keep |
+|--------|--------|-------------------|
+| `execution/engine.py` | Adapt | `start`, `stop`, `get_balance`, `_place_order`, `execute`, `_reprice_loop`, `check_order_book_depth`. Delete all arb methods |
+| `notifications/telegram.py` | Adapt | Entire class. Update signal summary in `_send_approval_message` |
+| `event_bus.py` | Keep | Unchanged |
+| `notifications/base.py` | Keep | `Notifier` ABC, `NotificationLevel` |
+| `scanner.py` | Adapt | `MarketScanner` class, `_parse_market` (Gamma API parsing). Add weather tag filter |
+| `exit_manager.py` | Adapt | `ExitManager`, `ExitRule`, `TrackedPosition`. All position tracking + exit logic |
+| `cli.py` | Adapt | All formatting utilities, status/position/trade panels. Rewrite signal and plugin panels for weather |
+
+### 15.20 Additional Config Corrections
+
+```yaml
+weather:
+  metar:
+    api_url: "https://aviationweather.gov/api/data/metar"
+    user_agent: "PolymarketWeatherBot/1.0"  # Required to avoid blocks
+    max_results_per_request: 400             # API limit
+  nwp:
+    api_url: "https://api.open-meteo.com/v1/ensemble"  # Ensemble endpoint, not /forecast
+    models: ["ecmwf_ifs025"]                             # 51 ensemble members
+    deterministic_models: ["gfs_seamless", "ecmwf_ifs025", "icon_global"]  # Fallback
+    rate_limit_per_minute: 600
+    rate_limit_per_hour: 5000
+```
