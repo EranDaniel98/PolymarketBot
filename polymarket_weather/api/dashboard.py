@@ -430,6 +430,79 @@ async def health():
     return {"status": "ok", "timestamp": datetime.now(timezone.utc).isoformat()}
 
 
+# ---------------------------------------------------------------------------
+# Phase 8.1 — scheduler health
+# ---------------------------------------------------------------------------
+
+@app.get("/api/jobs")
+async def get_jobs():
+    """Return last-run state for every scheduled job (auth required).
+
+    Useful for surfacing scheduler health in the dashboard. Each job entry
+    includes last_started_at, last_finished_at, last_error, success/failure
+    counts, and a `healthy` boolean (true if it ran within 2x its interval
+    and the last cycle didn't error).
+    """
+    from polymarket_weather.runtime import get_job_registry
+    registry = get_job_registry()
+    return [job.to_dict() for job in registry.all()]
+
+
+# ---------------------------------------------------------------------------
+# Phase 8.4 — manual kill switch
+# ---------------------------------------------------------------------------
+
+class KillSwitchRequest(BaseModel):
+    paused: bool
+
+
+@app.post("/api/kill_switch")
+@limiter.limit("5/minute")
+async def set_kill_switch(request: Request, payload: KillSwitchRequest):
+    """Pause or resume trading via the system_state.is_paused row.
+
+    The risk manager checks is_paused on every trade attempt and rejects
+    new orders when paused. Existing positions are NOT closed — this is
+    a STOP NEW TRADES switch, not an emergency liquidate.
+
+    For emergency liquidation, use the dashboard's per-position close
+    button (forthcoming) or `railway down`.
+    """
+    if not state.session_factory:
+        raise HTTPException(status_code=503, detail="Database not available")
+
+    from polymarket_weather.db import persistence
+    await persistence.set_trading_paused(state.session_factory, payload.paused)
+
+    # Mirror into the in-memory RiskManager so it takes effect immediately
+    # without waiting for the next DB read.
+    if state.risk is not None:
+        if payload.paused:
+            state.risk.pause()
+        else:
+            state.risk.resume()
+
+    logger.warning(
+        "kill_switch: trading %s by dashboard request",
+        "PAUSED" if payload.paused else "RESUMED",
+    )
+    return {
+        "status": "ok",
+        "paused": payload.paused,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+@app.get("/api/kill_switch")
+async def get_kill_switch():
+    """Read the current paused state."""
+    if not state.session_factory:
+        return {"paused": False, "available": False}
+    from polymarket_weather.db import persistence
+    paused = await persistence.is_trading_paused(state.session_factory)
+    return {"paused": paused, "available": True}
+
+
 @app.get("/api/metrics")
 async def metrics():
     """Prometheus-style metrics (text format).
