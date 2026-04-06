@@ -1,4 +1,6 @@
 """Tests for FastAPI dashboard endpoints."""
+import os
+
 import pytest
 from fastapi.testclient import TestClient
 from polymarket_weather.api.dashboard import app, set_state
@@ -6,7 +8,11 @@ from polymarket_weather.api.dashboard import app, set_state
 
 @pytest.fixture
 def client():
-    return TestClient(app)
+    # TestClient auto-includes X-API-Key header (DASH_PASS is set in conftest.py)
+    # so these legacy tests pass post-auth without per-test header plumbing.
+    c = TestClient(app)
+    c.headers.update({"X-API-Key": os.environ["DASH_PASS"]})
+    return c
 
 
 def test_health(client):
@@ -86,5 +92,12 @@ def test_events_empty(client):
 
 
 def test_config_update_no_db(client):
-    resp = client.put("/api/config", json={"key": "test", "value": "123"})
+    # Use a whitelisted key so validation passes and we reach the DB check.
+    resp = client.put("/api/config", json={"key": "max_position_usdc", "value": "25"})
     assert resp.status_code == 503
+
+
+def test_config_update_rejects_unknown_key(client):
+    # Validation rejects unknown keys BEFORE the DB check → 400.
+    resp = client.put("/api/config", json={"key": "arbitrary_key", "value": "123"})
+    assert resp.status_code == 400

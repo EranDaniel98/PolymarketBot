@@ -30,7 +30,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0", "pytest-asyncio>=0.24.0", "pytest-mock>=3.14.0", "ruff>=0.6.0", "aiosqlite>=0.20.0"]
-web = ["fastapi>=0.115.0", "uvicorn>=0.32.0"]
+web = ["fastapi>=0.115.0", "uvicorn>=0.32.0", "slowapi>=0.1.9"]
 
 [project.scripts]
 polymarket-weather = "polymarket_weather.__main__:main"

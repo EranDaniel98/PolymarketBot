@@ -8,14 +8,22 @@ from pathlib import Path
 import uvicorn
 
 from polymarket_weather.app import run_bot
-from polymarket_weather.api.dashboard import app, mount_frontend
-from polymarket_weather.config import load_config
+from polymarket_weather.logging_filters import install_on_root as install_log_redaction
 
 logger = logging.getLogger("polymarket_weather.server")
 
 
 async def main():
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
+    # Install secret-redaction filter on the root logger BEFORE any other module
+    # logs. This catches accidental leaks of private keys, telegram tokens, and
+    # DB URLs with credentials in log messages and exception tracebacks.
+    install_log_redaction()
+
+    # Import dashboard (and therefore install_auth()) AFTER the redaction filter
+    # is in place, so any startup-time auth errors are also redacted.
+    from polymarket_weather.api.dashboard import app, mount_frontend
+    from polymarket_weather.config import load_config
 
     config_path = os.environ.get("CONFIG_PATH", "config.yaml")
     config = load_config(Path(config_path))

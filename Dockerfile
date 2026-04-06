@@ -33,5 +33,10 @@ COPY --from=frontend /app/frontend/dist ./frontend/dist
 ENV PYTHONUNBUFFERED=1
 ENV CONFIG_PATH=/app/config.yaml
 
+# Drop privileges — never run the process as root.
+RUN useradd --create-home --uid 1000 --shell /bin/bash appuser \
+  && chown -R appuser:appuser /app
+USER appuser
+
 # Railway injects $PORT; polymarket_weather.config reads it and binds FastAPI to 0.0.0.0:$PORT
 CMD ["python", "-m", "polymarket_weather.server"]

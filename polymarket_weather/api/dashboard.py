@@ -1,26 +1,51 @@
 """FastAPI dashboard API endpoints."""
 
 import logging
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from slowapi.util import get_remote_address
+
+from polymarket_weather.api.auth import install_auth, validate_config_update
 
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="Polymarket Weather Dashboard", version="2.0.0")
 
-# CORS for Vite dev server
+# Rate limiting — per-IP. Buckets: reads 60/min, writes 5/min, health 120/min.
+limiter = Limiter(key_func=get_remote_address)
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+# Auth middleware — rejects /api/* requests without a valid X-API-Key header.
+# /api/health and static SPA assets bypass. Fails fast at import time if
+# DASH_PASS is unset or too short. Can be disabled for tests by setting
+# DASHBOARD_AUTH_DISABLED=1 (NEVER set this on Railway).
+if os.environ.get("DASHBOARD_AUTH_DISABLED") != "1":
+    install_auth(app)
+
+# CORS — allow only the production Railway domain and the local Vite dev server.
+# Override with DASHBOARD_CORS_ORIGINS (comma-separated) for extra origins.
+_default_origins = [
+    "http://localhost:5173",
+    "https://polymarketweatherbot-production-12a6.up.railway.app",
+]
+_extra = os.environ.get("DASHBOARD_CORS_ORIGINS", "")
+_origins = _default_origins + [o.strip() for o in _extra.split(",") if o.strip()]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173"],
+    allow_origins=_origins,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "PUT", "POST"],
+    allow_headers=["Content-Type", "X-API-Key"],
 )
 
 
@@ -310,9 +335,14 @@ async def get_config():
 
 
 @app.put("/api/config")
-async def update_config(update: ConfigUpdate):
+@limiter.limit("5/minute")
+async def update_config(request: Request, update: ConfigUpdate):
+    # Validate input BEFORE touching the DB so bad payloads get a clean 400
+    # regardless of DB state. Raises HTTPException(400) on rejection.
+    coerced = validate_config_update(update.key, update.value)
     if not state.session_factory:
         raise HTTPException(status_code=503, detail="Database not available")
+    logger.info("Dashboard config update: %s=%r", update.key, coerced)
     from polymarket_weather.db.models import RiskConfigEntry
     from sqlalchemy import select
     async with state.session_factory() as session:
@@ -320,16 +350,17 @@ async def update_config(update: ConfigUpdate):
             select(RiskConfigEntry).where(RiskConfigEntry.key == update.key)
         )
         existing = result.scalar_one_or_none()
+        stored_value = str(coerced)
         if existing:
-            existing.value = update.value
+            existing.value = stored_value
             existing.updated_at = datetime.now(timezone.utc)
         else:
             session.add(RiskConfigEntry(
-                key=update.key, value=update.value,
+                key=update.key, value=stored_value,
                 updated_at=datetime.now(timezone.utc),
             ))
         await session.commit()
-    return {"status": "ok", "key": update.key}
+    return {"status": "ok", "key": update.key, "value": coerced}
 
 
 @app.get("/api/cities", response_model=list[CityMappingItem])
@@ -348,7 +379,8 @@ async def get_city_mappings():
 
 
 @app.put("/api/cities")
-async def update_city_mapping(mapping: CityMappingItem):
+@limiter.limit("5/minute")
+async def update_city_mapping(request: Request, mapping: CityMappingItem):
     if not state.session_factory:
         raise HTTPException(status_code=503, detail="Database not available")
     from polymarket_weather.db.models import CityIcaoMapping
