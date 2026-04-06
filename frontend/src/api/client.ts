@@ -1,0 +1,77 @@
+const BASE = '/api';
+
+async function fetchJson<T>(path: string): Promise<T> {
+  const res = await fetch(`${BASE}${path}`);
+  if (!res.ok) throw new Error(`API error: ${res.status}`);
+  return res.json();
+}
+
+async function putJson<T>(path: string, body: unknown): Promise<T> {
+  const res = await fetch(`${BASE}${path}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw new Error(`API error: ${res.status}`);
+  return res.json();
+}
+
+// Types matching FastAPI response models
+export interface Overview {
+  total_pnl: number; daily_pnl: number; open_positions: number;
+  total_exposure: number; trades_today: number; win_rate: number;
+  bankroll: number; paper_mode: boolean; system_status: string;
+}
+
+export interface Opportunity {
+  id: number; market_id: string; city: string | null; question: string | null;
+  our_p: number; market_p: number; edge: number; direction: string;
+  confidence: number; forecast_source: string; detected_at: string;
+  traded: boolean; skip_reason: string | null;
+}
+
+export interface Position {
+  market_id: string; direction: string; entry_price: number; size_usdc: number;
+  current_price: number | null; unrealized_pnl: number; city: string;
+  event_id: string; entry_time: string; peak_pnl_pct: number;
+}
+
+export interface Trade {
+  id: number; market_id: string | null; question: string | null;
+  token_id: string | null; size_usdc: number | null; fill_price: number | null;
+  status: string; pnl_usdc: number | null; settlement_result: string | null;
+  placed_at: string | null; exit_reason: string | null;
+}
+
+export interface WeatherStation {
+  station_id: string; city_name: string; country_code: string;
+  last_temp_c: number | null; last_report_at: string | null;
+  is_stale: boolean; reliability_score: number | null;
+}
+
+export interface CalibrationBin {
+  bin_lower: number; bin_upper: number; predicted_mean: number;
+  observed_rate: number; count: number;
+}
+
+export interface ConfigItem { key: string; value: string; updated_at: string | null; }
+export interface CityMapping { id: number | null; city_pattern: string; station_id: string; priority: number; }
+export interface SystemEvent {
+  id: number; event_type: string; severity: string;
+  message: string | null; details: Record<string, unknown> | null; created_at: string;
+}
+
+// API functions
+export const api = {
+  overview: () => fetchJson<Overview>('/overview'),
+  opportunities: (traded?: boolean) => fetchJson<Opportunity[]>(`/opportunities${traded !== undefined ? `?traded=${traded}` : ''}`),
+  positions: () => fetchJson<Position[]>('/positions'),
+  history: (limit = 100) => fetchJson<Trade[]>(`/history?limit=${limit}`),
+  weather: () => fetchJson<WeatherStation[]>('/weather'),
+  calibration: () => fetchJson<CalibrationBin[]>('/calibration'),
+  config: () => fetchJson<ConfigItem[]>('/config'),
+  updateConfig: (key: string, value: string) => putJson('/config', { key, value }),
+  cities: () => fetchJson<CityMapping[]>('/cities'),
+  updateCity: (mapping: CityMapping) => putJson('/cities', mapping),
+  events: (severity?: string) => fetchJson<SystemEvent[]>(`/events${severity ? `?severity=${severity}` : ''}`),
+};
