@@ -3,5 +3,8 @@ builder = "dockerfile"
 dockerfilePath = "Dockerfile"
 
 [deploy]
+startCommand = "python -m polymarket_weather.server"
 restartPolicyType = "always"
 restartPolicyMaxRetries = 10
+healthcheckPath = "/api/health"
+healthcheckTimeout = 30

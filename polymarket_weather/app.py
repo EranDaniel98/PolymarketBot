@@ -28,9 +28,13 @@ async def run_bot(config_path: str = "config.yaml"):
         logger.info(">>> PAPER TRADING MODE — no real orders <<<")
 
     # Initialize database
-    from polymarket_weather.db.session import init_db, get_session_factory, dispose_db
+    from polymarket_weather.db.session import init_db, get_session_factory, get_engine, dispose_db
+    from polymarket_weather.db.models import Base
     init_db(config.database.url)
     session_factory = get_session_factory()
+    # Auto-create tables on first run (Alembic not wired yet)
+    async with get_engine().begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
     logger.info("Database initialized")
 
     # Event bus
