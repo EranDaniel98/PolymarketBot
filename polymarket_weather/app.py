@@ -30,11 +30,14 @@ async def run_bot(config_path: str = "config.yaml"):
     # Initialize database
     from polymarket_weather.db.session import init_db, get_session_factory, get_engine, dispose_db
     from polymarket_weather.db.models import Base
+    from polymarket_weather.db import persistence
     init_db(config.database.url)
     session_factory = get_session_factory()
-    # Auto-create tables on first run (Alembic not wired yet)
+    # Auto-create tables on first run (Alembic not wired yet — Phase 7.4)
     async with get_engine().begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+    # Phase 2.1: add missing columns to trades table on existing deploys
+    await persistence.ensure_schema(session_factory)
     logger.info("Database initialized")
 
     # Event bus
@@ -148,10 +151,42 @@ async def run_bot(config_path: str = "config.yaml"):
     )
 
     # Position manager
-    from polymarket_weather.trading.positions import PositionManager
+    from polymarket_weather.trading.positions import PositionManager, TrackedPosition
     positions = PositionManager(
         edge_inversion_threshold=config.trading.edge_inversion_threshold,
     )
+
+    # Phase 2.1: reconcile open positions from DB on startup so state survives
+    # process restarts. Any in-memory dict from a prior run is gone, but the
+    # DB has every status='open' trade with full metadata.
+    open_rows = await persistence.load_open_positions(session_factory)
+    for r in open_rows:
+        positions._positions[r.market_id] = TrackedPosition(
+            market_id=r.market_id,
+            direction=r.direction,
+            entry_price=r.entry_price,
+            size_usdc=r.size_usdc,
+            city=r.city,
+            event_id=r.event_id,
+            entry_time=r.entry_time,
+            peak_pnl_pct=r.peak_pnl_pct,
+        )
+        # Mirror into the RiskManager's exposure dict too
+        risk.record_entry(r.market_id, r.city, r.region, r.size_usdc)
+    if open_rows:
+        logger.info("Restored %d open positions from DB", len(open_rows))
+
+    # Phase 2.2: pull daily_loss and completed_trades counters from DB state
+    dl = await persistence.get_daily_loss(session_factory)
+    ct = await persistence.get_completed_trades(session_factory)
+    if dl > 0:
+        risk._daily_loss = dl
+    risk._completed_trades = ct
+    logger.info("Restored state: daily_loss=%.2f completed_trades=%d", dl, ct)
+
+    # Phase 2.4: shared lock serializing the mismatch → risk-check → execute
+    # → record critical section so concurrent scheduler ticks can't race.
+    trade_lock = asyncio.Lock()
 
     # Telegram alerts
     notifier = None

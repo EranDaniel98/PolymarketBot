@@ -170,6 +170,7 @@ class Trade(Base):
     __tablename__ = "trades"
     __table_args__ = (
         Index("ix_trades_status_placed", "status", "placed_at"),
+        Index("ix_trades_market_status", "market_id", "status"),
     )
 
     id: Mapped[int] = mapped_column(_BigIntPK, primary_key=True, autoincrement=True)
@@ -179,6 +180,16 @@ class Trade(Base):
     poly_order_id: Mapped[str | None] = mapped_column(
         String(100), index=True, nullable=True
     )
+    # Denormalized position metadata — Phase 2.1. These fields let the Trade
+    # table double as the source-of-truth for open positions so state survives
+    # process crashes. Populated from the originating Opportunity at entry.
+    market_id: Mapped[str | None] = mapped_column(String(100), index=True, nullable=True)
+    direction: Mapped[str | None] = mapped_column(String(5), nullable=True)     # "YES"/"NO"
+    city: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    region: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    event_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    peak_pnl_pct: Mapped[float | None] = mapped_column(Numeric(8, 4), nullable=True)
+
     token_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
     size_usdc: Mapped[float | None] = mapped_column(Numeric(12, 2), nullable=True)
     limit_price: Mapped[float | None] = mapped_column(Numeric(5, 4), nullable=True)
@@ -275,6 +286,27 @@ class RiskConfigEntry(Base):
     __tablename__ = "risk_config"
 
     key: Mapped[str] = mapped_column(String(50), primary_key=True)
+    value: Mapped[str] = mapped_column(Text)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=sa.func.now()
+    )
+
+
+# ---------------------------------------------------------------------------
+# Table 9b: SystemState — Phase 2.2/2.3 crash-safe runtime counters
+# ---------------------------------------------------------------------------
+
+class SystemState(Base):
+    """Generic key/value store for stateful runtime counters.
+
+    Used for:
+      - daily_loss:<YYYY-MM-DD> → float str (auto-reset when date rolls over)
+      - completed_trades → int str (bootstrap phase counter, survives restarts)
+      - is_paused → "true"/"false" (manual kill-switch)
+    """
+    __tablename__ = "system_state"
+
+    key: Mapped[str] = mapped_column(String(80), primary_key=True)
     value: Mapped[str] = mapped_column(Text)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=sa.func.now()
