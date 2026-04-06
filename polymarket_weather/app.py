@@ -236,10 +236,41 @@ async def run_bot(config_path: str = "config.yaml"):
         count = await metar.fetch_and_store(station_ids)
         logger.info("METAR poll: %d new readings", count)
 
+    # Phase 4: instantiate the mismatch pipeline once. It holds references
+    # to all the collaborators it needs and is stateless per-call.
+    from polymarket_weather.trading.pipeline import MismatchPipeline
+    pipeline = MismatchPipeline(
+        city_mapper=city_mapper,
+        forecast_engine=forecast,
+        metar_collector=metar,
+        nwp_fetcher=nwp,
+        risk_manager=risk,
+        executor=executor,
+        position_manager=positions,
+        session_factory=session_factory,
+        trade_lock=trade_lock,
+        notifier=notifier,
+        edge_config=config.edge,
+        fee_config=config.fee,
+        trading_config=config.trading,
+        risk_config=config.risk,
+    )
+
     async def market_scan_and_mismatch_job():
         markets = await scanner.fetch_weather_markets()
         logger.info("Market scan: %d weather markets", len(markets))
-        # TODO: run mismatch detection on scanned markets
+        if not markets:
+            return
+        traded = 0
+        skipped: dict[str, int] = {}
+        for m in markets:
+            result = await pipeline.evaluate(m)
+            if result.decision == "traded":
+                traded += 1
+            else:
+                skipped[result.reason] = skipped.get(result.reason, 0) + 1
+        if traded or skipped:
+            logger.info("Pipeline: %d traded, skips=%s", traded, dict(skipped))
 
     async def stale_data_check_job():
         stale = await metar.check_staleness(station_ids, config.weather.metar.stale_threshold)

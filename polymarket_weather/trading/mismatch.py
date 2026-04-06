@@ -49,36 +49,44 @@ def compute_kelly_size(
     max_position: float,
     min_position: float,
 ) -> float:
-    """Compute position size using Kelly criterion.
+    """Compute position size using fractional Kelly criterion.
 
-    YES side: kelly_f = edge / (1 - clamped_price)
-    NO side:  kelly_f = edge / clamped_price
-    Fee adjustment reduces effective kelly.
-    Price clamped to [0.05, 0.95] to prevent blow-up at extremes.
-    Raw kelly capped at 0.25 before applying fraction.
+    Math (Phase 4.2 — derived, not heuristic):
+      For a binary prediction-market bet at price `p`, paying $1 on win:
+        - YES bet pays (1-p)/p per unit risked → Kelly f = edge / (1 - p)
+        - NO bet pays p/(1-p) per unit risked  → Kelly f = edge / p
+      Fees reduce the effective edge linearly: effective_edge = edge - fee.
+      If effective_edge <= 0 we skip the trade entirely (fees eat the edge).
+
+    Safety rails:
+      - Price clamped to [0.05, 0.95] to prevent blow-up at extremes.
+      - Raw fractional Kelly capped at 0.25 (a 25% bankroll bet is the
+        absolute hard cap regardless of edge).
+      - Final size capped at max_position and floored at min_position.
     """
     if edge <= 0 or bankroll <= 0:
         return 0.0
 
+    # Phase 4.2: subtract fee from edge BEFORE computing Kelly. The old code
+    # used `effective_kelly = raw_kelly * (1 - fee/edge)` which is a heuristic
+    # approximation; subtracting from edge directly is the derived form.
+    effective_edge = edge - fee
+    if effective_edge <= 0:
+        return 0.0  # Fees eat the edge — don't trade
+
     # Clamp price to avoid blow-up at extremes
     clamped_price = max(0.05, min(0.95, market_price))
 
-    # Compute raw Kelly fraction based on direction
+    # Compute Kelly fraction based on direction (using effective_edge)
     if direction == "YES":
-        raw_kelly = edge / (1 - clamped_price)
+        raw_kelly = effective_edge / (1 - clamped_price)
     elif direction == "NO":
-        raw_kelly = edge / clamped_price
+        raw_kelly = effective_edge / clamped_price
     else:
         return 0.0
 
-    # Fee adjustment — reduce effective kelly
-    if edge > fee:
-        effective_kelly = raw_kelly * (1 - fee / edge)
-    else:
-        return 0.0  # Edge doesn't cover fees
-
-    # Cap raw kelly at 0.25 before applying fraction
-    capped = min(effective_kelly, 0.25)
+    # Hard cap at 0.25 of bankroll before fractional Kelly
+    capped = min(raw_kelly, 0.25)
 
     # Apply fractional Kelly and bankroll
     size = bankroll * capped * kelly_fraction
