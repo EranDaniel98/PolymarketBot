@@ -46,14 +46,24 @@ def parse_metar_response(json_data: list[dict]) -> list[dict]:
         raw_metar = obs.get("rawOb", "")
         temp_precise = parse_remarks_temperature(raw_metar) if raw_metar else None
 
+        # wdir may be 'VRB' (variable) in real METAR — coerce to None so it
+        # fits the INTEGER column. Same logic for wspd/wgst just in case.
+        def _to_int_or_none(v):
+            if v is None or v == "" or v == "VRB":
+                return None
+            try:
+                return int(v)
+            except (TypeError, ValueError):
+                return None
+
         readings.append({
             "station_id": station_id,
             "observed_at": datetime.fromtimestamp(obs_time, tz=timezone.utc),
             "temp": obs.get("temp"),
             "dewp": obs.get("dewp"),
-            "wdir": obs.get("wdir"),
-            "wspd": obs.get("wspd"),
-            "wgst": obs.get("wgst"),
+            "wdir": _to_int_or_none(obs.get("wdir")),
+            "wspd": _to_int_or_none(obs.get("wspd")),
+            "wgst": _to_int_or_none(obs.get("wgst")),
             "altim": obs.get("altim"),
             "slp": obs.get("slp"),
             "visib": str(obs.get("visib", "")) if obs.get("visib") is not None else None,
