@@ -15,8 +15,10 @@ from dotenv import load_dotenv
 class PolymarketConfig:
     api_key: str = ""
     api_secret: str = ""
+    api_passphrase: str = ""
     private_key: str = ""
     chain_id: int = 137
+    host: str = "https://clob.polymarket.com"
 
 
 @dataclass
@@ -268,6 +270,7 @@ _ENV_MAP = {
     "DATABASE_URL": ("database", "url"),
     "POLYMARKET_API_KEY": ("polymarket", "api_key"),
     "POLYMARKET_API_SECRET": ("polymarket", "api_secret"),
+    "POLYMARKET_API_PASSPHRASE": ("polymarket", "api_passphrase"),
     "POLYMARKET_PRIVATE_KEY": ("polymarket", "private_key"),
     "TELEGRAM_BOT_TOKEN": ("notifications.telegram", "bot_token"),
     "TELEGRAM_CHAT_ID": ("notifications.telegram", "chat_id"),
