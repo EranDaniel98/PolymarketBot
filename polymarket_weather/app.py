@@ -45,6 +45,36 @@ async def run_bot(config_path: str = "config.yaml"):
     city_mapper = CityMapper(Path(config.cities.file))
     logger.info("City mapper loaded: %d cities", len(city_mapper.all_city_names()))
 
+    # Seed IcaoStation rows for all configured stations so the metar_readings
+    # FK has somewhere to point. Idempotent upsert — safe on every boot.
+    from polymarket_weather.db.models import IcaoStation
+    from sqlalchemy.dialects.postgresql import insert as pg_insert
+    from sqlalchemy import select as sa_select
+    async with session_factory() as session:
+        for city in city_mapper.all_cities():
+            primary = city.get("primary_station")
+            if not primary:
+                continue
+            # Use SELECT-then-INSERT pattern (portable across PG + SQLite
+            # in tests; pg_insert upsert would be PG-only).
+            exists = await session.execute(
+                sa_select(IcaoStation.station_id).where(
+                    IcaoStation.station_id == primary
+                )
+            )
+            if exists.scalar_one_or_none() is not None:
+                continue
+            session.add(IcaoStation(
+                station_id=primary,
+                city_name=city["city_aliases"][0],
+                country_code=city.get("country", "XX")[:2],
+                lat=city["lat"],
+                lon=city["lon"],
+                is_active=True,
+            ))
+        await session.commit()
+    logger.info("IcaoStation seed complete")
+
     # Weather collector
     from polymarket_weather.weather.collector import MetarCollector
     metar = MetarCollector(

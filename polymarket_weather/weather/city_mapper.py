@@ -51,6 +51,10 @@ class CityMapper:
         """Return all primary station IDs (for METAR polling)."""
         return list({c["primary_station"] for c in self._cities})
 
+    def all_cities(self) -> list[dict]:
+        """Return the raw city config list (for DB seeding)."""
+        return list(self._cities)
+
     def get_region(self, city_name: str) -> str | None:
         """Get region for correlation checking."""
         match = self.resolve(city_name)
