@@ -1,7 +1,7 @@
 import pytest
 import json
 from pathlib import Path
-from polymarket_weather.weather.city_mapper import CityMapper, CityMatch
+from polymarket_weather.weather.city_mapper import CityMapper
 
 
 @pytest.fixture

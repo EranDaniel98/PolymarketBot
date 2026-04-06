@@ -1,7 +1,7 @@
 import pytest
 from polymarket_weather.trading.mismatch import (
     compute_edge, compute_kelly_size, filter_opportunity,
-    get_min_edge_for_source, OpportunitySignal, EdgeResult,
+    get_min_edge_for_source, OpportunitySignal,
 )
 
 

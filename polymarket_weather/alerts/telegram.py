@@ -1,9 +1,6 @@
 """Telegram alerts — adapted from existing bot for weather-specific notifications."""
 
-import asyncio
-import hashlib
 import logging
-from datetime import datetime, timezone
 from enum import Enum
 
 logger = logging.getLogger(__name__)

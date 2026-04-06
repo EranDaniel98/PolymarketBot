@@ -188,7 +188,7 @@ class TestMetarParserEdgeCases:
 class TestExecutorRetry:
     @pytest.mark.asyncio
     async def test_live_execute_retries_on_transient_error(self, monkeypatch):
-        from polymarket_weather.trading.executor import OrderResult, TradeExecutor
+        from polymarket_weather.trading.executor import TradeExecutor
 
         executor = TradeExecutor(
             paper_trading=False, paper_balance=0,

@@ -4,7 +4,6 @@ import logging
 import os
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -265,7 +264,7 @@ async def get_weather_stations():
     from sqlalchemy import select
     async with state.session_factory() as session:
         result = await session.execute(
-            select(IcaoStation).where(IcaoStation.is_active == True)
+            select(IcaoStation).where(IcaoStation.is_active.is_(True))
         )
         stations = result.scalars().all()
         now = datetime.now(timezone.utc)

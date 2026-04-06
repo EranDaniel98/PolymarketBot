@@ -27,7 +27,6 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any
 
 from polymarket_weather.db import persistence
 from polymarket_weather.markets.parser import ParsedMarket, parse_market_question

@@ -89,7 +89,6 @@ class TestForecastNaiveTarget:
 
 class TestEnsembleStdGuard:
     def test_std_at_with_single_member_returns_none(self):
-        import numpy as np
 
         from polymarket_weather.weather.nwp import EnsembleResult
         now = datetime.now(timezone.utc)

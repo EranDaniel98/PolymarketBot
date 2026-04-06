@@ -2,7 +2,6 @@
 
 import logging
 
-import pytest
 
 from polymarket_weather.logging_filters import (
     SecretRedactionFilter,

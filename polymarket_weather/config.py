@@ -244,7 +244,6 @@ def _dict_to_dataclass(cls, data: dict):
     """Recursively convert a nested dict into the target dataclass."""
     if data is None:
         return cls()
-    field_names = {f.name for f in fields(cls)}
     filtered = {}
     for f in fields(cls):
         if f.name not in data:

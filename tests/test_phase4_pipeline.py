@@ -14,7 +14,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from polymarket_weather.markets.scanner import ScannedMarket
-from polymarket_weather.trading.mismatch import compute_kelly_size, compute_edge
+from polymarket_weather.trading.mismatch import compute_kelly_size
 from polymarket_weather.trading.pipeline import (
     REASON_EXTREME_PRICE,
     REASON_HORIZON_TOO_LONG,

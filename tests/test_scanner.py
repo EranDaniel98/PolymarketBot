@@ -1,6 +1,5 @@
 """Tests for the weather market scanner (polymarket_weather.markets.scanner)."""
 
-import json
 import pytest
 from unittest.mock import AsyncMock, MagicMock
 
@@ -9,7 +8,6 @@ from polymarket_weather.markets.scanner import (
     parse_outcome_prices,
     parse_gamma_event,
     WeatherMarketScanner,
-    ScannedMarket,
 )
 
 

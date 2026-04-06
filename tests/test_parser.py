@@ -2,11 +2,9 @@
 Tests for polymarket_weather.markets.parser
 """
 
-import pytest
 from polymarket_weather.markets.parser import (
     parse_market_question,
     detect_city,
-    ParsedMarket,
 )
 
 

@@ -1,5 +1,4 @@
-import pytest
-from polymarket_weather.trading.risk import RiskManager, RiskCheck
+from polymarket_weather.trading.risk import RiskManager
 
 
 def test_risk_check_passes():

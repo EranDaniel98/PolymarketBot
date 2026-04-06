@@ -66,7 +66,7 @@ async def main():
     try:
         async with asyncio.TaskGroup() as tg:
             bot_task = tg.create_task(run_bot(config_path), name="bot")
-            web_task = tg.create_task(server.serve(), name="web")
+            tg.create_task(server.serve(), name="web")
 
             async def _wait_for_signal() -> None:
                 await shutdown_event.wait()

@@ -40,8 +40,8 @@ async def run_bot(config_path: str = "config.yaml"):
     await persistence.ensure_schema(session_factory)
     logger.info("Database initialized")
 
-    # Event bus
-    bus = EventBus()
+    # Event bus — kept for components that publish/subscribe; unused at boot.
+    _ = EventBus()
 
     # City mapper
     from polymarket_weather.weather.city_mapper import CityMapper
@@ -51,7 +51,6 @@ async def run_bot(config_path: str = "config.yaml"):
     # Seed IcaoStation rows for all configured stations so the metar_readings
     # FK has somewhere to point. Idempotent upsert — safe on every boot.
     from polymarket_weather.db.models import IcaoStation
-    from sqlalchemy.dialects.postgresql import insert as pg_insert
     from sqlalchemy import select as sa_select
     async with session_factory() as session:
         for city in city_mapper.all_cities():

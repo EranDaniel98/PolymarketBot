@@ -13,8 +13,8 @@ venv
 logs/
 *.db
 *.sqlite
-polymarket_bot/
 polymarket_bot.egg-info/
+config.yaml
 tests/
 docs/
 frontend/node_modules

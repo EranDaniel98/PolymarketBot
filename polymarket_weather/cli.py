@@ -1,6 +1,5 @@
 """Rich CLI dashboard for the weather arbitrage bot."""
 
-import time
 from datetime import datetime, timezone
 
 

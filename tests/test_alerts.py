@@ -1,7 +1,7 @@
 from polymarket_weather.alerts.telegram import (
     WeatherTelegramNotifier, format_opportunity_message,
     format_trade_message, format_settlement_message,
-    format_stale_station_message, format_daily_report, AlertLevel,
+    format_stale_station_message, format_daily_report,
 )
 
 

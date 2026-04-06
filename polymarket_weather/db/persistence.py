@@ -23,7 +23,6 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
-from typing import Any
 
 import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import async_sessionmaker

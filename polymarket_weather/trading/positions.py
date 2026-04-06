@@ -1,6 +1,6 @@
 """Position manager — tracks open positions, computes PnL, detects exits."""
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timezone
 
 
