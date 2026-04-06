@@ -174,11 +174,34 @@ async def run_bot(config_path: str = "config.yaml"):
 
     logger.info("Bot is running. Press Ctrl+C to stop.")
 
-    # Simple polling loop (APScheduler integration in future iteration)
+    # Structured-concurrency scheduler: each job runs in its own task inside
+    # a TaskGroup. Failure in one job is logged but doesn't cancel the others.
+    # Fix 1.1 — replaces the old no-op `while True: await asyncio.sleep(60)`.
+    from polymarket_weather.runtime import interval_runner
+
     try:
-        while True:
-            await asyncio.sleep(60)
-    except asyncio.CancelledError:
+        async with asyncio.TaskGroup() as tg:
+            tg.create_task(
+                interval_runner("metar_poll", metar_poll_job, config.scheduler.metar_poll),
+                name="metar_poll",
+            )
+            tg.create_task(
+                interval_runner(
+                    "market_scan_and_mismatch",
+                    market_scan_and_mismatch_job,
+                    config.scheduler.market_scan,
+                ),
+                name="market_scan_and_mismatch",
+            )
+            tg.create_task(
+                interval_runner(
+                    "stale_data_check",
+                    stale_data_check_job,
+                    config.scheduler.stale_data_check,
+                ),
+                name="stale_data_check",
+            )
+    except* asyncio.CancelledError:
         pass
     finally:
         logger.info("Shutting down...")

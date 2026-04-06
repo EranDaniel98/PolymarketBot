@@ -141,6 +141,9 @@ class MetarCollector:
         from polymarket_weather.db.models import IcaoStation, MetarReading
 
         stored = 0
+        # Track the freshest new observed_at per station so we only update
+        # last_report_at for stations that had NEW data in this batch. Fix 1.7.
+        freshest: dict[str, datetime] = {}
         async with self._session_factory() as session:
             for r in readings:
                 # Check for duplicate (station_id + observed_at)
@@ -173,14 +176,19 @@ class MetarCollector:
                 )
                 session.add(reading)
                 stored += 1
+                # Track only stations that produced a fresh row so we don't
+                # mark duplicate-only stations as recently reporting. Fix 1.7.
+                prev = freshest.get(r["station_id"])
+                if prev is None or r["observed_at"] > prev:
+                    freshest[r["station_id"]] = r["observed_at"]
 
             if stored > 0:
-                # Update last_report_at on stations
-                for r in readings:
+                # Update last_report_at ONLY for stations that had new readings
+                for sid, observed_at in freshest.items():
                     await session.execute(
                         update(IcaoStation)
-                        .where(IcaoStation.station_id == r["station_id"])
-                        .values(last_report_at=r["observed_at"])
+                        .where(IcaoStation.station_id == sid)
+                        .values(last_report_at=observed_at)
                     )
                 await session.commit()
 

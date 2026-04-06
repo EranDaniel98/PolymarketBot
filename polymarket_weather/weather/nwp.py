@@ -38,13 +38,26 @@ class EnsembleResult:
         values = [m[hour_index] for m in self.members]
         return float(np.mean(values))
 
-    def std_at(self, hour_index: int) -> float:
-        """Std dev across members at a specific hour (sample std, ddof=1)."""
+    def std_at(self, hour_index: int) -> float | None:
+        """Std dev across members at a specific hour (sample std, ddof=1).
+
+        Returns None if the ensemble has fewer than 2 members — in that case
+        sample std is undefined, and np.std with ddof=1 would return nan,
+        which would then propagate silently into probability computations
+        (every nan comparison returns False, so filters silently allow
+        spurious opportunities). Fix 1.4.
+        """
         values = [m[hour_index] for m in self.members]
+        if len(values) < 2:
+            return None
         return float(np.std(values, ddof=1))
 
-    def at_time(self, target: datetime) -> tuple[float, float]:
+    def at_time(self, target: datetime) -> tuple[float, float | None]:
         """Return (mean, std) at the closest available hour to *target*.
+
+        std may be None if the ensemble has fewer than 2 members; callers
+        must treat None as 'no ensemble uncertainty estimate available' and
+        fall back to the RMSE table (see ForecastEngine.compute_from_ensemble).
 
         Raises ValueError if there is no forecast data.
         """

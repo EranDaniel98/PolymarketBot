@@ -100,8 +100,12 @@ def test_ensemble_std_at():
     assert result.std_at(0) > 0
 
 
-def test_ensemble_std_single_member_raises():
-    """std with ddof=1 on a single member should produce nan (numpy behaviour)."""
+def test_ensemble_std_single_member_returns_none():
+    """std with ddof=1 on a single member is undefined → return None (Fix 1.4).
+
+    Previously returned nan, which propagates silently through probability
+    math and lets spurious opportunities pass every filter.
+    """
     data = {
         "latitude": 0.0,
         "longitude": 0.0,
@@ -111,8 +115,7 @@ def test_ensemble_std_single_member_raises():
         },
     }
     result = parse_ensemble_response(data)
-    import math
-    assert math.isnan(result.std_at(0))
+    assert result.std_at(0) is None
 
 
 # ---------------------------------------------------------------------------

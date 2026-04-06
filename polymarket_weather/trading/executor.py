@@ -41,17 +41,22 @@ class TradeExecutor:
         if self._paper_trading:
             logger.info("Trade executor started in PAPER mode (balance: $%.2f)", self._paper_balance)
             return
-        try:
-            from py_clob_client.client import ClobClient
-            self._clob_client = ClobClient(
-                host="https://clob.polymarket.com",
-                key=private_key, chain_id=chain_id,
+        # Fail-fast: live mode must have a working CLOB client on startup.
+        # The old code log-and-continued on error, leaving the bot running
+        # with self._clob_client = None; any subsequent order attempt would
+        # silently mis-behave. Fix 1.5.
+        if not private_key:
+            raise RuntimeError(
+                "TradeExecutor: private_key is required when paper_trading=False"
             )
-            creds = await asyncio.to_thread(self._clob_client.create_or_derive_api_creds)
-            self._clob_client.set_api_creds(creds)
-            logger.info("CLOB client authenticated (Level 2)")
-        except Exception:
-            logger.exception("Failed to initialize CLOB client")
+        from py_clob_client.client import ClobClient
+        self._clob_client = ClobClient(
+            host="https://clob.polymarket.com",
+            key=private_key, chain_id=chain_id,
+        )
+        creds = await asyncio.to_thread(self._clob_client.create_or_derive_api_creds)
+        self._clob_client.set_api_creds(creds)
+        logger.info("CLOB client authenticated (Level 2)")
 
     async def stop(self) -> None:
         self._clob_client = None

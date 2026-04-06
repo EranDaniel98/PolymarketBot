@@ -12,7 +12,7 @@ tail behaviour than the normal distribution.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 
 import numpy as np
 from scipy.stats import t as t_dist
@@ -42,8 +42,11 @@ def compute_probability_above(forecast_mean: float, sigma: float,
     """P(temp > threshold) using Student's t-distribution.
 
     All values in the same unit (Celsius or Fahrenheit).
+    Raises ValueError if sigma is negative.
     """
-    if sigma <= 0:
+    if sigma < 0:
+        raise ValueError(f"sigma must be >= 0, got {sigma}")
+    if sigma == 0:
         return 1.0 if forecast_mean > threshold else 0.0
     z = (threshold - forecast_mean) / sigma
     return float(1.0 - t_dist.cdf(z, df))
@@ -51,8 +54,13 @@ def compute_probability_above(forecast_mean: float, sigma: float,
 
 def compute_probability_below(forecast_mean: float, sigma: float,
                               threshold: float, df: int = 7) -> float:
-    """P(temp < threshold) using Student's t-distribution."""
-    if sigma <= 0:
+    """P(temp < threshold) using Student's t-distribution.
+
+    Raises ValueError if sigma is negative.
+    """
+    if sigma < 0:
+        raise ValueError(f"sigma must be >= 0, got {sigma}")
+    if sigma == 0:
         return 1.0 if forecast_mean < threshold else 0.0
     z = (threshold - forecast_mean) / sigma
     return float(t_dist.cdf(z, df))
@@ -63,8 +71,13 @@ def compute_probability_range(forecast_mean: float, sigma: float,
     """P(lower <= temp <= upper) using Student's t-distribution.
 
     For Polymarket's 2-degree bucket markets.
+    Raises ValueError if sigma is negative or if lower > upper.
     """
-    if sigma <= 0:
+    if sigma < 0:
+        raise ValueError(f"sigma must be >= 0, got {sigma}")
+    if lower > upper:
+        raise ValueError(f"lower ({lower}) must be <= upper ({upper})")
+    if sigma == 0:
         return 1.0 if lower <= forecast_mean <= upper else 0.0
     z_lower = (lower - forecast_mean) / sigma
     z_upper = (upper - forecast_mean) / sigma
@@ -91,6 +104,11 @@ def metar_trend_forecast(readings: list[tuple[datetime, float]],
     """
     if len(readings) < 2:
         raise ValueError("Need at least 2 readings for trend extrapolation")
+
+    # Normalize target to UTC-aware if it came in naive, so subtraction with
+    # UTC-aware METAR timestamps doesn't raise. Fix 1.3 (second site).
+    if target.tzinfo is None:
+        target = target.replace(tzinfo=timezone.utc)
 
     # Convert to relative hours from first reading
     t0 = readings[0][0]
@@ -208,10 +226,14 @@ class ForecastEngine:
         mean, sigma = metar_trend_forecast(readings, target)
         prob = self._compute_prob(mean, sigma, threshold, threshold_upper, direction)
 
-        # Confidence based on data freshness and number of readings
+        # Confidence based on data freshness and number of readings.
+        # Always use UTC: METAR timestamps are UTC-aware, so datetime.now(None)
+        # (naive local time) would raise TypeError on subtraction. Fix 1.3.
         latest_reading_time = max(r[0] for r in readings)
+        if latest_reading_time.tzinfo is None:
+            latest_reading_time = latest_reading_time.replace(tzinfo=timezone.utc)
         age_minutes = (
-            (datetime.now(target.tzinfo or None) - latest_reading_time).total_seconds()
+            (datetime.now(timezone.utc) - latest_reading_time).total_seconds()
             / 60
         )
         confidence = min(0.95, 0.5 + len(readings) * 0.05) * max(
@@ -236,16 +258,20 @@ class ForecastEngine:
     def compute_from_ensemble(
         self,
         ensemble_mean: float,
-        ensemble_std: float,
+        ensemble_std: float | None,
         hours_to_resolution: float,
         threshold: float,
         threshold_upper: float | None,
         direction: str,
         n_members: int = 51,
     ) -> ForecastResult | None:
-        """Compute probability from NWP ensemble (30h+ regime)."""
-        # Use ensemble spread if enough members, else fall back to RMSE table
-        if n_members >= 10 and ensemble_std > 0:
+        """Compute probability from NWP ensemble (30h+ regime).
+
+        ensemble_std may be None (e.g. single-member ensemble); the code
+        falls back to the RMSE table in that case.
+        """
+        # Use ensemble spread if enough members AND std is valid, else fall back.
+        if n_members >= 10 and ensemble_std is not None and ensemble_std > 0:
             sigma = ensemble_std
         else:
             sigma = get_rmse_for_horizon(hours_to_resolution, self._rmse_table)
