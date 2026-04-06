@@ -188,6 +188,18 @@ async def run_bot(config_path: str = "config.yaml"):
     # → record critical section so concurrent scheduler ticks can't race.
     trade_lock = asyncio.Lock()
 
+    # Wire shared state into the dashboard so /api/overview, /api/metrics etc.
+    # can read real data. Was missed in the original build-out.
+    from polymarket_weather.api.dashboard import set_state
+    set_state(
+        session_factory=session_factory,
+        positions=positions,
+        risk=risk,
+        executor=executor,
+        config=config,
+        scanner=scanner,
+    )
+
     # Telegram alerts
     notifier = None
     if config.notifications.telegram.enabled:
