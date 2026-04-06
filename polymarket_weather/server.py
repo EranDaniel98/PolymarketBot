@@ -3,6 +3,8 @@
 import asyncio
 import logging
 import os
+import signal
+import sys
 from pathlib import Path
 
 import uvicorn
@@ -40,20 +42,40 @@ async def main():
     )
     server = uvicorn.Server(uvicorn_config)
 
-    # Run bot loop and web server concurrently
-    bot_task = asyncio.create_task(run_bot(config_path), name="bot")
-    web_task = asyncio.create_task(server.serve(), name="web")
+    # Phase 3.1/3.7: structured concurrency + graceful SIGTERM.
+    # asyncio.TaskGroup gives us automatic cancellation propagation: if one
+    # task crashes, all siblings get cancelled. A SIGTERM handler cancels the
+    # tasks directly, giving interval_runner a chance to propagate
+    # CancelledError through the bot's shutdown sequence.
+    loop = asyncio.get_running_loop()
+    shutdown_event = asyncio.Event()
 
-    done, pending = await asyncio.wait(
-        {bot_task, web_task}, return_when=asyncio.FIRST_EXCEPTION
-    )
-    for task in pending:
-        task.cancel()
-    for task in done:
-        exc = task.exception()
-        if exc:
-            logger.error("%s task crashed: %s", task.get_name(), exc)
-            raise exc
+    def _handle_signal(sig_name: str) -> None:
+        logger.info("received %s — initiating graceful shutdown", sig_name)
+        shutdown_event.set()
+        server.should_exit = True
+
+    if sys.platform != "win32":
+        # Windows ProactorEventLoop doesn't support add_signal_handler for SIGTERM.
+        for sig in (signal.SIGTERM, signal.SIGINT):
+            try:
+                loop.add_signal_handler(sig, _handle_signal, sig.name)
+            except NotImplementedError:
+                pass
+
+    try:
+        async with asyncio.TaskGroup() as tg:
+            bot_task = tg.create_task(run_bot(config_path), name="bot")
+            web_task = tg.create_task(server.serve(), name="web")
+
+            async def _wait_for_signal() -> None:
+                await shutdown_event.wait()
+                bot_task.cancel()
+                # server.should_exit is already True — uvicorn will wind down.
+
+            tg.create_task(_wait_for_signal(), name="signal_watcher")
+    except* asyncio.CancelledError:
+        logger.info("shutdown: all tasks cancelled cleanly")
 
 
 if __name__ == "__main__":

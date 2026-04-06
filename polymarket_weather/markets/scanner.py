@@ -204,8 +204,11 @@ class WeatherMarketScanner:
             if self._weather_tag_id is not None:
                 params["tag_id"] = self._weather_tag_id
 
+            from polymarket_weather.resilience import CircuitOpenError, get_breaker
+            breaker = get_breaker("polymarket_gamma", failure_threshold=5, reset_timeout=120.0)
             try:
-                resp = await self._http.get(
+                resp = await breaker.call(
+                    self._http.get,
                     f"{self._base_url}{self._discovery_endpoint}",
                     params=params,
                 )
@@ -232,6 +235,9 @@ class WeatherMarketScanner:
                 if len(events) < limit:
                     break
 
+            except CircuitOpenError:
+                logger.warning("Polymarket Gamma breaker open — skipping market scan")
+                break
             except Exception:
                 logger.exception("Market fetch failed at offset %d", offset)
                 break

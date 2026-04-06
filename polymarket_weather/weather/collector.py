@@ -122,8 +122,10 @@ class MetarCollector:
             "hours": self._hours_lookback,
             "taf": "false",
         }
+        from polymarket_weather.resilience import CircuitOpenError, get_breaker
+        breaker = get_breaker("metar", failure_threshold=5, reset_timeout=120.0)
         try:
-            resp = await self._http.get(self._api_url, params=params)
+            resp = await breaker.call(self._http.get, self._api_url, params=params)
             if resp.status_code != 200:
                 logger.warning(
                     "METAR API error %d: %s", resp.status_code, resp.text[:200]
@@ -133,6 +135,9 @@ class MetarCollector:
             if not isinstance(data, list):
                 return []
             return parse_metar_response(data)
+        except CircuitOpenError:
+            logger.warning("METAR breaker open — skipping fetch for %d stations", len(station_ids))
+            return []
         except Exception:
             logger.exception("METAR fetch failed for %d stations", len(station_ids))
             return []

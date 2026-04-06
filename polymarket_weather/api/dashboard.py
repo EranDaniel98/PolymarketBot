@@ -431,6 +431,50 @@ async def health():
     return {"status": "ok", "timestamp": datetime.now(timezone.utc).isoformat()}
 
 
+@app.get("/api/metrics")
+async def metrics():
+    """Prometheus-style metrics (text format).
+
+    Protected by the bearer-token middleware alongside all other /api/ routes.
+    Includes circuit-breaker states, position counts, DB-backed counters.
+    """
+    from fastapi.responses import PlainTextResponse
+
+    from polymarket_weather.resilience import CircuitState, all_breakers
+
+    lines: list[str] = []
+    lines.append("# HELP pmw_breaker_state Circuit breaker state (0=closed,1=half_open,2=open)")
+    lines.append("# TYPE pmw_breaker_state gauge")
+    state_map = {CircuitState.CLOSED: 0, CircuitState.HALF_OPEN: 1, CircuitState.OPEN: 2}
+    for name, breaker in all_breakers().items():
+        lines.append(f'pmw_breaker_state{{name="{name}"}} {state_map[breaker.state]}')
+        lines.append(f'pmw_breaker_consecutive_failures{{name="{name}"}} {breaker.consecutive_failures}')
+
+    # Position + bankroll metrics if trade state is available
+    if state.positions is not None:
+        lines.append("# HELP pmw_open_positions Number of open positions")
+        lines.append("# TYPE pmw_open_positions gauge")
+        lines.append(f"pmw_open_positions {state.positions.open_count}")
+        lines.append("# HELP pmw_total_exposure_usdc Total USDC committed to open positions")
+        lines.append("# TYPE pmw_total_exposure_usdc gauge")
+        lines.append(f"pmw_total_exposure_usdc {state.positions.total_exposure}")
+
+    if state.risk is not None:
+        lines.append("# HELP pmw_daily_loss_usdc Loss accumulated so far today")
+        lines.append("# TYPE pmw_daily_loss_usdc gauge")
+        lines.append(f"pmw_daily_loss_usdc {state.risk._daily_loss}")
+        lines.append("# HELP pmw_completed_trades Total settled trades (bootstrap counter)")
+        lines.append("# TYPE pmw_completed_trades counter")
+        lines.append(f"pmw_completed_trades {state.risk._completed_trades}")
+
+    lines.append("# HELP pmw_paper_mode 1 if paper trading, 0 if live")
+    lines.append("# TYPE pmw_paper_mode gauge")
+    paper_mode = bool(state.config and state.config.trading.paper_trading)
+    lines.append(f"pmw_paper_mode {int(paper_mode)}")
+
+    return PlainTextResponse("\n".join(lines) + "\n", media_type="text/plain; version=0.0.4")
+
+
 # --- Static file serving for production ---
 
 def mount_frontend(frontend_dir: str = "frontend/dist"):

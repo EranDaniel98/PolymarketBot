@@ -165,8 +165,10 @@ class NwpFetcher:
             "forecast_days": forecast_days,
             "timezone": "UTC",
         }
+        from polymarket_weather.resilience import CircuitOpenError, get_breaker
+        breaker = get_breaker("nwp_ensemble", failure_threshold=5, reset_timeout=300.0)
         try:
-            resp = await self._http.get(self._api_url, params=params)
+            resp = await breaker.call(self._http.get, self._api_url, params=params)
             if resp.status_code != 200:
                 logger.warning(
                     "Open-Meteo ensemble error %d: %s",
@@ -175,6 +177,9 @@ class NwpFetcher:
                 )
                 return None
             return parse_ensemble_response(resp.json())
+        except CircuitOpenError:
+            logger.warning("NWP ensemble breaker open — skipping fetch for %.2f,%.2f", lat, lon)
+            return None
         except Exception:
             logger.exception("NWP ensemble fetch failed for %.2f,%.2f", lat, lon)
             return None

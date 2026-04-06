@@ -85,11 +85,54 @@ class SecretRedactionFormatter(logging.Formatter):
         return _scrub(self._inner.format(record)) or ""
 
 
-def install_on_root() -> None:
+class JSONLogFormatter(logging.Formatter):
+    """Emit log records as single-line JSON for aggregation (Railway, ELK, etc.).
+
+    Chosen over structlog to avoid a new dependency; the processor chain we
+    need is tiny. Applies secret redaction to the final message. Phase 3.3.
+    """
+
+    def format(self, record: logging.LogRecord) -> str:
+        import json
+        base = {
+            "ts": self.formatTime(record, datefmt="%Y-%m-%dT%H:%M:%S"),
+            "level": record.levelname,
+            "logger": record.name,
+            "msg": _scrub(record.getMessage()),
+        }
+        if record.exc_info:
+            base["exc"] = _scrub(self.formatException(record.exc_info))
+        # Surface any structured extras (passed via logger.info("...", extra={...}))
+        standard_attrs = {
+            "name", "msg", "args", "levelname", "levelno", "pathname", "filename",
+            "module", "exc_info", "exc_text", "stack_info", "lineno", "funcName",
+            "created", "msecs", "relativeCreated", "thread", "threadName",
+            "processName", "process", "taskName", "message",
+        }
+        for key, value in record.__dict__.items():
+            if key not in standard_attrs and not key.startswith("_"):
+                try:
+                    json.dumps(value)  # ensure serializable
+                    base[key] = _scrub(value) if isinstance(value, str) else value
+                except (TypeError, ValueError):
+                    base[key] = repr(value)
+        return json.dumps(base, default=str)
+
+
+def install_on_root(*, json_format: bool | None = None) -> None:
     """Install the redaction filter + formatter on the root logger.
 
     Idempotent: calling twice will not install twice.
+
+    json_format:
+      - None  → read LOG_FORMAT env var; "json" → JSON, anything else → text
+      - True  → force JSON
+      - False → force plain text
     """
+    import os
+    if json_format is None:
+        json_format = os.environ.get("LOG_FORMAT", "").lower() == "json"
+
     root = logging.getLogger()
     marker = "_pmw_redaction_installed"
     if getattr(root, marker, False):
@@ -98,7 +141,9 @@ def install_on_root() -> None:
     root.addFilter(redact)
     for handler in root.handlers:
         handler.addFilter(redact)
-        if handler.formatter is not None and not isinstance(
+        if json_format:
+            handler.setFormatter(JSONLogFormatter())
+        elif handler.formatter is not None and not isinstance(
             handler.formatter, SecretRedactionFormatter
         ):
             handler.setFormatter(SecretRedactionFormatter(handler.formatter))
