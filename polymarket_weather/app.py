@@ -279,6 +279,16 @@ async def run_bot(config_path: str = "config.yaml"):
                 for sid in stale:
                     await notifier.send_stale_station(sid, config.weather.metar.stale_threshold / 3600)
 
+    async def calibration_job():
+        """Phase 4.6: walk recently-settled trades and write their outcomes
+        to the edge_calibration table so the /api/calibration endpoint has
+        data to bin. No-op until the bot has settled trades."""
+        from polymarket_weather.trading.calibration import run_calibration_job
+        lookback = getattr(config.calibration, "lookback_days", 90)
+        written = await run_calibration_job(session_factory, lookback_days=lookback)
+        if written > 0:
+            logger.info("calibration: wrote %d new rows", written)
+
     logger.info("Bot is running. Press Ctrl+C to stop.")
 
     # Structured-concurrency scheduler: each job runs in its own task inside
@@ -307,6 +317,18 @@ async def run_bot(config_path: str = "config.yaml"):
                     config.scheduler.stale_data_check,
                 ),
                 name="stale_data_check",
+            )
+            # Phase 4.6: calibration job — runs every 6h to pick up newly-
+            # settled trades. The expensive part (Brier / bias computation)
+            # is gated inside run_calibration_job by lookback_days and dedup,
+            # so this is cheap even without new data.
+            tg.create_task(
+                interval_runner(
+                    "calibration",
+                    calibration_job,
+                    21600,  # 6 hours
+                ),
+                name="calibration",
             )
     except* asyncio.CancelledError:
         pass

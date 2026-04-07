@@ -264,17 +264,48 @@ class ForecastEngine:
         threshold_upper: float | None,
         direction: str,
         n_members: int = 51,
+        bias: float = 0.0,
     ) -> ForecastResult | None:
         """Compute probability from NWP ensemble (30h+ regime).
 
-        ensemble_std may be None (e.g. single-member ensemble); the code
-        falls back to the RMSE table in that case.
+        Phase 4.1 — sigma blending rules:
+
+        Ensemble std measures INTER-member spread, which captures the
+        *known* uncertainty between different initial conditions. But it
+        systematically underestimates total forecast error because it
+        ignores model biases and shared-error modes across all members
+        (when every member is wrong in the same direction).
+
+        The RMSE table, by contrast, is observation-grounded: it comes
+        from comparing past forecasts against actual weather. It captures
+        the TRUE total error — bias plus inter-member spread plus
+        systematic blind spots — but only as a single average value per
+        horizon.
+
+        We blend them by taking sigma² = max(ensemble_std², rmse²) + bias²:
+          - The max() term ensures we never trust the ensemble more than
+            history says we should.
+          - The bias term is additive (bias²) under the assumption that
+            bias and spread are independent error sources — this
+            conservatively inflates sigma when we know there's a
+            systematic offset (e.g. station X always runs 0.8°F cold).
+
+        Falls back to pure RMSE when the ensemble is too small to estimate
+        std (< 10 members) or ensemble_std is None (see nwp.std_at()).
+
+        Args:
+            bias: station-specific mean offset in the same unit as the
+                temperature values. Default 0 — the calibration job
+                (Phase 4.6) populates per-station bias over time.
         """
-        # Use ensemble spread if enough members AND std is valid, else fall back.
+        rmse = get_rmse_for_horizon(hours_to_resolution, self._rmse_table)
         if n_members >= 10 and ensemble_std is not None and ensemble_std > 0:
-            sigma = ensemble_std
+            # Blended sigma: max of inter-member spread and RMSE, plus bias² additive.
+            sigma_sq = max(ensemble_std ** 2, rmse ** 2) + bias ** 2
+            sigma = sigma_sq ** 0.5
         else:
-            sigma = get_rmse_for_horizon(hours_to_resolution, self._rmse_table)
+            # No usable ensemble spread — use RMSE alone, still adding bias².
+            sigma = (rmse ** 2 + bias ** 2) ** 0.5
 
         prob = self._compute_prob(
             ensemble_mean, sigma, threshold, threshold_upper, direction
@@ -295,6 +326,10 @@ class ForecastEngine:
             details={
                 "n_members": n_members,
                 "hours_to_resolution": hours_to_resolution,
+                "ensemble_std": ensemble_std,
+                "rmse": rmse,
+                "bias": bias,
+                "final_sigma": sigma,
             },
         )
 
