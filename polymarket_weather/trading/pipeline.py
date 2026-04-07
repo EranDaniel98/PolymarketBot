@@ -298,16 +298,16 @@ class MismatchPipeline:
                 scanned.market_id, city_match.city_name, city_match.region, size,
             )
 
-        # 12. Telegram alert (best-effort, outside lock)
+        # 12. Telegram alert (best-effort, outside lock).
+        # The notifier exposes send_trade(market_id, direction, amount, price, question).
         if self.notifier is not None:
             try:
-                await self.notifier.send_trade_placed(
+                await self.notifier.send_trade(
                     market_id=scanned.market_id,
                     direction=edge_result.direction,
-                    size=size,
+                    amount=size,
                     price=price_for_side,
-                    our_p=our_p,
-                    edge=edge_result.raw_edge,
+                    question=scanned.question,
                 )
             except Exception:
                 logger.exception("notifier.send_trade_placed failed")
