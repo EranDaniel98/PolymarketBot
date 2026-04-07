@@ -27,6 +27,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from typing import Any
 
 from polymarket_weather.db import persistence
 from polymarket_weather.markets.parser import ParsedMarket, parse_market_question
@@ -88,21 +89,21 @@ class MismatchPipeline:
     def __init__(
         self,
         *,
-        city_mapper,
-        forecast_engine,
-        metar_collector,
-        nwp_fetcher,
-        risk_manager,
-        executor,
-        position_manager,
-        session_factory,
-        trade_lock,
-        notifier=None,
-        edge_config=None,
-        fee_config=None,
-        trading_config=None,
-        risk_config=None,
-    ):
+        city_mapper: Any,
+        forecast_engine: Any,
+        metar_collector: Any,
+        nwp_fetcher: Any,
+        risk_manager: Any,
+        executor: Any,
+        position_manager: Any,
+        session_factory: Any,
+        trade_lock: Any,
+        notifier: Any = None,
+        edge_config: Any = None,
+        fee_config: Any = None,
+        trading_config: Any = None,
+        risk_config: Any = None,
+    ) -> None:
         self.city_mapper = city_mapper
         self.forecast = forecast_engine
         self.metar = metar_collector
@@ -322,7 +323,7 @@ class MismatchPipeline:
 
     # -- Helpers ------------------------------------------------------------
 
-    async def _get_forecast(self, parsed: ParsedMarket, city_match, hours: float):
+    async def _get_forecast(self, parsed: ParsedMarket, city_match: Any, hours: float) -> Any:
         """Pick the right forecast regime based on hours-to-resolution.
 
         For now we always go through the NWP ensemble path because METAR
@@ -356,4 +357,4 @@ class MismatchPipeline:
     def _fee_for(self, category: str) -> float:
         if self.fee_config is None:
             return 0.01
-        return self.fee_config.weather_taker_fee or self.fee_config.default_taker_fee
+        return float(self.fee_config.weather_taker_fee or self.fee_config.default_taker_fee)

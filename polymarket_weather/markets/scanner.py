@@ -4,6 +4,7 @@ import json
 import logging
 from dataclasses import dataclass
 from datetime import datetime
+from typing import Any
 
 import httpx
 
@@ -26,7 +27,7 @@ class ScannedMarket:
     category: str
 
 
-def parse_clob_tokens(raw) -> tuple[str, str] | None:
+def parse_clob_tokens(raw: Any) -> tuple[str, str] | None:
     """Parse clobTokenIds which may be JSON string or list.
 
     Returns (yes_token_id, no_token_id) or None if parsing fails.
@@ -55,7 +56,7 @@ def parse_clob_tokens(raw) -> tuple[str, str] | None:
     return (yes, no) if yes and no else None
 
 
-def parse_outcome_prices(raw) -> tuple[float, float]:
+def parse_outcome_prices(raw: Any) -> tuple[float, float]:
     """Parse outcomePrices which may be JSON string or list.
 
     Returns (yes_price, no_price). Defaults to (0.5, 0.5) on any failure.

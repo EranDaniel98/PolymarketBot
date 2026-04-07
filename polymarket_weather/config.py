@@ -1,9 +1,9 @@
 import os
 from dataclasses import dataclass, field, fields
 from pathlib import Path
-from typing import get_type_hints
+from typing import Any, get_type_hints
 
-import yaml
+import yaml  # type: ignore[import-untyped]
 from dotenv import load_dotenv
 
 
@@ -243,11 +243,11 @@ class BotConfig:
 # Config loading
 # ---------------------------------------------------------------------------
 
-def _dict_to_dataclass(cls, data: dict):
+def _dict_to_dataclass(cls: type, data: dict[str, Any] | None) -> Any:
     """Recursively convert a nested dict into the target dataclass."""
     if data is None:
         return cls()
-    filtered = {}
+    filtered: dict[str, Any] = {}
     for f in fields(cls):
         if f.name not in data:
             continue
@@ -313,6 +313,6 @@ def load_config(path: Path) -> BotConfig:
         raise FileNotFoundError(f"Config file not found: {path}")
     with open(path) as f:
         raw = yaml.safe_load(f) or {}
-    config = _dict_to_dataclass(BotConfig, raw)
+    config: BotConfig = _dict_to_dataclass(BotConfig, raw)
     _apply_env_overrides(config)
     return config

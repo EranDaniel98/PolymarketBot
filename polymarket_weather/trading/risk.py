@@ -97,14 +97,14 @@ class RiskManager:
 
     @property
     def total_exposure(self) -> float:
-        return sum(p["size"] for p in self._positions.values())
+        return float(sum(p["size"] for p in self._positions.values()))
 
     @property
     def open_count(self) -> int:
         return len(self._positions)
 
     def city_exposure(self, city: str) -> float:
-        return sum(p["size"] for p in self._positions.values() if p["city"] == city)
+        return float(sum(p["size"] for p in self._positions.values() if p["city"] == city))
 
     def region_exposure(self, region: str) -> float:
-        return sum(p["size"] for p in self._positions.values() if p["region"] == region)
+        return float(sum(p["size"] for p in self._positions.values() if p["region"] == region))

@@ -1,7 +1,7 @@
 import asyncio
 
 
-def main():
+def main() -> None:
     from polymarket_weather.app import run_bot
     try:
         asyncio.run(run_bot())

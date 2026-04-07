@@ -18,7 +18,7 @@ import hmac
 import logging
 import os
 from dataclasses import dataclass
-from typing import Callable
+from typing import Any, Callable
 
 from fastapi import HTTPException, Request, status
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -68,16 +68,17 @@ class BearerAuthMiddleware(BaseHTTPMiddleware):
     Non-/api paths (static SPA assets) and explicitly-public paths bypass.
     """
 
-    def __init__(self, app, secret: str) -> None:
+    def __init__(self, app: Any, secret: str) -> None:
         super().__init__(app)
         self._secret = secret.encode("utf-8")
 
-    async def dispatch(self, request: Request, call_next: Callable) -> Response:
+    async def dispatch(self, request: Request, call_next: Callable[..., Any]) -> Response:
         path = request.url.path
 
         # Public by policy
         if path in _PUBLIC_PATHS or not _is_api_path(path):
-            return await call_next(request)
+            response: Response = await call_next(request)
+            return response
 
         # Require X-API-Key
         supplied = request.headers.get("x-api-key", "")
@@ -95,10 +96,11 @@ class BearerAuthMiddleware(BaseHTTPMiddleware):
                 content={"detail": "Invalid X-API-Key"},
             )
 
-        return await call_next(request)
+        response = await call_next(request)
+        return response
 
 
-def install_auth(app) -> None:
+def install_auth(app: Any) -> None:
     """Install the bearer-token middleware on the given FastAPI app.
 
     Raises RuntimeError at startup if DASH_PASS is missing/too-short.
@@ -126,6 +128,7 @@ class ConfigKeySpec:
             if raw.lower() in {"false", "0", "no", "off"}:
                 return False
             raise ValueError(f"not a bool: {raw!r}")
+        v: int | float | str
         if self.type_ is int:
             v = int(raw)
         elif self.type_ is float:

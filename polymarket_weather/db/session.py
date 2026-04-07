@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from sqlalchemy.ext.asyncio import (
+    AsyncEngine,
     AsyncSession,
     async_sessionmaker,
     create_async_engine,
@@ -37,7 +38,7 @@ def get_session_factory() -> async_sessionmaker[AsyncSession]:
     return _session_factory
 
 
-def get_engine():
+def get_engine() -> AsyncEngine:
     """Return the async engine.  Raises if init_db() has not been called."""
     if _engine is None:
         raise RuntimeError("Database not initialized. Call init_db() first.")

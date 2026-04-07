@@ -25,7 +25,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, timezone
 
 import sqlalchemy as sa
-from sqlalchemy.ext.asyncio import async_sessionmaker
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from polymarket_weather.db.models import SystemState, Trade
 
@@ -221,14 +221,15 @@ async def load_open_positions(
 # SystemState — daily loss, completed trades, paused flag
 # ---------------------------------------------------------------------------
 
-async def _get_state(session, key: str) -> str | None:
+async def _get_state(session: AsyncSession, key: str) -> str | None:
     result = await session.execute(
         sa.select(SystemState.value).where(SystemState.key == key)
     )
-    return result.scalar_one_or_none()
+    value = result.scalar_one_or_none()
+    return str(value) if value is not None else None
 
 
-async def _set_state(session, key: str, value: str) -> None:
+async def _set_state(session: AsyncSession, key: str, value: str) -> None:
     existing = await session.execute(
         sa.select(SystemState).where(SystemState.key == key)
     )

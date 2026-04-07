@@ -37,3 +37,45 @@ polymarket-weather = "polymarket_weather.__main__:main"
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+
+# ---------------------------------------------------------------------------
+# mypy — production type-check bar (Phase 7.1)
+# ---------------------------------------------------------------------------
+# We deliberately do NOT enable full --strict because:
+#   - disallow_any_generics is too noisy on existing dict / list usage
+#   - third-party packages (httpx, telegram, py_clob_client, scipy.stats)
+#     don't ship type stubs, so disallow_subclassing_any blows up
+#   - several Pydantic dataclass quirks need explicit Any escapes that hurt
+#     readability without catching real bugs
+#
+# What we DO enforce (the bug-finding checks):
+#   - disallow_untyped_defs: every function must have annotations
+#   - check_untyped_defs: type-check the bodies of those functions
+#   - warn_unused_ignores: dead `# type: ignore` lines fail
+#   - warn_return_any: don't silently leak Any out of typed APIs
+#   - no_implicit_optional: `x: int = None` is rejected
+#   - warn_redundant_casts: dead casts fail
+[tool.mypy]
+python_version = "3.12"
+files = ["polymarket_weather"]
+disallow_untyped_defs = true
+check_untyped_defs = true
+warn_unused_ignores = true
+warn_return_any = true
+no_implicit_optional = true
+warn_redundant_casts = true
+warn_unreachable = true
+ignore_missing_imports = true
+
+# Per-module overrides for files that interface with untyped third-party APIs.
+# These get a softer bar so we don't have to litter inline ignores.
+[[tool.mypy.overrides]]
+module = [
+    "polymarket_weather.alerts.*",
+    "polymarket_weather.trading.executor",
+    "polymarket_weather.weather.collector",
+    "polymarket_weather.weather.nwp",
+    "polymarket_weather.markets.scanner",
+]
+warn_return_any = false
+disable_error_code = ["assignment", "attr-defined", "unreachable", "arg-type", "call-arg", "name-defined", "return-value"]

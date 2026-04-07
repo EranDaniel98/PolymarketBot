@@ -25,9 +25,11 @@ COPY polymarket_weather/ polymarket_weather/
 
 RUN pip install --no-cache-dir ".[web]"
 
-# Config + static assets
+# Config + static assets + Alembic migrations
 COPY config/ config/
 COPY config.railway.yaml config.yaml
+COPY alembic.ini ./
+COPY migrations/ migrations/
 COPY --from=frontend /app/frontend/dist ./frontend/dist
 
 ENV PYTHONUNBUFFERED=1

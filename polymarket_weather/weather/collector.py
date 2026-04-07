@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import re
+from typing import Any
 from datetime import datetime, timezone
 
 import httpx
@@ -48,7 +49,7 @@ def parse_metar_response(json_data: list[dict]) -> list[dict]:
 
         # wdir may be 'VRB' (variable) in real METAR — coerce to None so it
         # fits the INTEGER column. Same logic for wspd/wgst just in case.
-        def _to_int_or_none(v):
+        def _to_int_or_none(v: Any) -> int | None:
             if v is None or v == "" or v == "VRB":
                 return None
             try:
@@ -89,8 +90,8 @@ class MetarCollector:
         user_agent: str,
         hours_lookback: int,
         max_results: int,
-        session_factory=None,
-    ):
+        session_factory: Any = None,
+    ) -> None:
         self._api_url = api_url
         self._user_agent = user_agent
         self._hours_lookback = hours_lookback

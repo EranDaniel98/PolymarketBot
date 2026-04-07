@@ -4,6 +4,7 @@ import logging
 import os
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -22,7 +23,7 @@ app = FastAPI(title="Polymarket Weather Dashboard", version="2.0.0")
 # Rate limiting — per-IP. Buckets: reads 60/min, writes 5/min, health 120/min.
 limiter = Limiter(key_func=get_remote_address)
 app.state.limiter = limiter
-app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)  # type: ignore[arg-type]
 
 # Auth middleware — rejects /api/* requests without a valid X-API-Key header.
 # /api/health and static SPA assets bypass. Fails fast at import time if
@@ -154,19 +155,19 @@ class SystemEventItem(BaseModel):
 
 class DashboardState:
     """Mutable state container shared between app.py and API endpoints."""
-    def __init__(self):
-        self.session_factory = None
-        self.positions = None       # PositionManager
-        self.risk = None            # RiskManager
-        self.executor = None        # TradeExecutor
-        self.config = None          # BotConfig
-        self.scanner = None         # WeatherMarketScanner
+    def __init__(self) -> None:
+        self.session_factory: Any = None
+        self.positions: Any = None       # PositionManager
+        self.risk: Any = None            # RiskManager
+        self.executor: Any = None        # TradeExecutor
+        self.config: Any = None          # BotConfig
+        self.scanner: Any = None         # WeatherMarketScanner
 
 
 state = DashboardState()
 
 
-def set_state(**kwargs):
+def set_state(**kwargs: Any) -> None:
     for k, v in kwargs.items():
         setattr(state, k, v)
 
@@ -174,7 +175,7 @@ def set_state(**kwargs):
 # --- Endpoints ---
 
 @app.get("/api/overview", response_model=OverviewResponse)
-async def get_overview():
+async def get_overview() -> Any:
     result = OverviewResponse(paper_mode=True)
     if state.positions:
         result.open_positions = state.positions.open_count
@@ -189,7 +190,7 @@ async def get_overview():
 
 
 @app.get("/api/opportunities", response_model=list[OpportunityItem])
-async def get_opportunities(traded: bool | None = None, limit: int = 50):
+async def get_opportunities(traded: bool | None = None, limit: int = 50) -> Any:
     if not state.session_factory:
         return []
     from polymarket_weather.db.models import Opportunity, PolyMarket
@@ -218,7 +219,7 @@ async def get_opportunities(traded: bool | None = None, limit: int = 50):
 
 
 @app.get("/api/positions", response_model=list[PositionItem])
-async def get_positions():
+async def get_positions() -> Any:
     if not state.positions:
         return []
     items = []
@@ -234,7 +235,7 @@ async def get_positions():
 
 
 @app.get("/api/history", response_model=list[TradeItem])
-async def get_trade_history(limit: int = 100, offset: int = 0):
+async def get_trade_history(limit: int = 100, offset: int = 0) -> Any:
     if not state.session_factory:
         return []
     from polymarket_weather.db.models import Trade
@@ -257,7 +258,7 @@ async def get_trade_history(limit: int = 100, offset: int = 0):
 
 
 @app.get("/api/weather", response_model=list[WeatherStationItem])
-async def get_weather_stations():
+async def get_weather_stations() -> Any:
     if not state.session_factory:
         return []
     from polymarket_weather.db.models import IcaoStation
@@ -285,7 +286,7 @@ async def get_weather_stations():
 
 
 @app.get("/api/calibration", response_model=list[CalibrationBin])
-async def get_calibration():
+async def get_calibration() -> Any:
     if not state.session_factory:
         return []
     from polymarket_weather.db.models import EdgeCalibration
@@ -319,7 +320,7 @@ async def get_calibration():
 
 
 @app.get("/api/config", response_model=list[ConfigItem])
-async def get_config():
+async def get_config() -> Any:
     if not state.session_factory:
         return []
     from polymarket_weather.db.models import RiskConfigEntry
@@ -335,7 +336,7 @@ async def get_config():
 
 @app.put("/api/config")
 @limiter.limit("5/minute")
-async def update_config(request: Request, update: ConfigUpdate):
+async def update_config(request: Request, update: ConfigUpdate) -> Any:
     # Validate input BEFORE touching the DB so bad payloads get a clean 400
     # regardless of DB state. Raises HTTPException(400) on rejection.
     coerced = validate_config_update(update.key, update.value)
@@ -363,7 +364,7 @@ async def update_config(request: Request, update: ConfigUpdate):
 
 
 @app.get("/api/cities", response_model=list[CityMappingItem])
-async def get_city_mappings():
+async def get_city_mappings() -> Any:
     if not state.session_factory:
         return []
     from polymarket_weather.db.models import CityIcaoMapping
@@ -379,7 +380,7 @@ async def get_city_mappings():
 
 @app.put("/api/cities")
 @limiter.limit("5/minute")
-async def update_city_mapping(request: Request, mapping: CityMappingItem):
+async def update_city_mapping(request: Request, mapping: CityMappingItem) -> Any:
     if not state.session_factory:
         raise HTTPException(status_code=503, detail="Database not available")
     from polymarket_weather.db.models import CityIcaoMapping
@@ -407,7 +408,7 @@ async def update_city_mapping(request: Request, mapping: CityMappingItem):
 
 
 @app.get("/api/events", response_model=list[SystemEventItem])
-async def get_system_events(severity: str | None = None, limit: int = 100):
+async def get_system_events(severity: str | None = None, limit: int = 100) -> Any:
     if not state.session_factory:
         return []
     from polymarket_weather.db.models import SystemEvent
@@ -426,7 +427,7 @@ async def get_system_events(severity: str | None = None, limit: int = 100):
 
 
 @app.get("/api/health")
-async def health():
+async def health() -> dict[str, str]:
     return {"status": "ok", "timestamp": datetime.now(timezone.utc).isoformat()}
 
 
@@ -435,7 +436,7 @@ async def health():
 # ---------------------------------------------------------------------------
 
 @app.get("/api/jobs")
-async def get_jobs():
+async def get_jobs() -> Any:
     """Return last-run state for every scheduled job (auth required).
 
     Useful for surfacing scheduler health in the dashboard. Each job entry
@@ -458,7 +459,7 @@ class KillSwitchRequest(BaseModel):
 
 @app.post("/api/kill_switch")
 @limiter.limit("5/minute")
-async def set_kill_switch(request: Request, payload: KillSwitchRequest):
+async def set_kill_switch(request: Request, payload: KillSwitchRequest) -> Any:
     """Pause or resume trading via the system_state.is_paused row.
 
     The risk manager checks is_paused on every trade attempt and rejects
@@ -494,7 +495,7 @@ async def set_kill_switch(request: Request, payload: KillSwitchRequest):
 
 
 @app.get("/api/kill_switch")
-async def get_kill_switch():
+async def get_kill_switch() -> Any:
     """Read the current paused state."""
     if not state.session_factory:
         return {"paused": False, "available": False}
@@ -504,7 +505,7 @@ async def get_kill_switch():
 
 
 @app.get("/api/metrics")
-async def metrics():
+async def metrics() -> Any:
     """Prometheus-style metrics (text format).
 
     Protected by the bearer-token middleware alongside all other /api/ routes.
@@ -549,7 +550,7 @@ async def metrics():
 
 # --- Static file serving for production ---
 
-def mount_frontend(frontend_dir: str = "frontend/dist"):
+def mount_frontend(frontend_dir: str = "frontend/dist") -> None:
     """Mount React build output for production serving."""
     dist = Path(frontend_dir)
     if dist.exists():

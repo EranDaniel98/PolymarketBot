@@ -11,7 +11,7 @@ from polymarket_weather.event_bus import EventBus
 logger = logging.getLogger("polymarket_weather")
 
 
-async def run_bot(config_path: str = "config.yaml"):
+async def run_bot(config_path: str = "config.yaml") -> None:
     """Main entry point. Initializes all components and runs the trading loop."""
     # Setup logging
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
@@ -33,11 +33,27 @@ async def run_bot(config_path: str = "config.yaml"):
     from polymarket_weather.db import persistence
     init_db(config.database.url)
     session_factory = get_session_factory()
-    # Auto-create tables on first run (Alembic not wired yet — Phase 7.4)
-    async with get_engine().begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-    # Phase 2.1: add missing columns to trades table on existing deploys
-    await persistence.ensure_schema(session_factory)
+
+    # Phase 7.4: run Alembic migrations on startup. Replaces the old
+    # `Base.metadata.create_all` shortcut and the ensure_schema ALTER hack.
+    # Falls back to create_all if Alembic isn't available (e.g. ad-hoc tests).
+    try:
+        from alembic import command as alembic_command
+        from alembic.config import Config as AlembicConfig
+        import asyncio as _asyncio
+
+        def _run_alembic_upgrade() -> None:
+            cfg = AlembicConfig("alembic.ini")
+            cfg.set_main_option("sqlalchemy.url", config.database.url)
+            alembic_command.upgrade(cfg, "head")
+
+        await _asyncio.to_thread(_run_alembic_upgrade)
+        logger.info("Alembic migrations: at head")
+    except Exception:
+        logger.exception("Alembic upgrade failed — falling back to create_all")
+        async with get_engine().begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        await persistence.ensure_schema(session_factory)
     logger.info("Database initialized")
 
     # Event bus — kept for components that publish/subscribe; unused at boot.
@@ -232,7 +248,7 @@ async def run_bot(config_path: str = "config.yaml"):
     # --- Job functions ---
     station_ids = city_mapper.all_station_ids()
 
-    async def metar_poll_job():
+    async def metar_poll_job() -> None:
         count = await metar.fetch_and_store(station_ids)
         logger.info("METAR poll: %d new readings", count)
 
@@ -256,7 +272,7 @@ async def run_bot(config_path: str = "config.yaml"):
         risk_config=config.risk,
     )
 
-    async def market_scan_and_mismatch_job():
+    async def market_scan_and_mismatch_job() -> None:
         markets = await scanner.fetch_weather_markets()
         logger.info("Market scan: %d weather markets", len(markets))
         if not markets:
@@ -272,7 +288,7 @@ async def run_bot(config_path: str = "config.yaml"):
         if traded or skipped:
             logger.info("Pipeline: %d traded, skips=%s", traded, dict(skipped))
 
-    async def stale_data_check_job():
+    async def stale_data_check_job() -> None:
         stale = await metar.check_staleness(station_ids, config.weather.metar.stale_threshold)
         if stale:
             logger.warning("Stale stations: %s", stale)
@@ -280,7 +296,7 @@ async def run_bot(config_path: str = "config.yaml"):
                 for sid in stale:
                     await notifier.send_stale_station(sid, config.weather.metar.stale_threshold / 3600)
 
-    async def calibration_job():
+    async def calibration_job() -> None:
         """Phase 4.6: walk recently-settled trades and write their outcomes
         to the edge_calibration table so the /api/calibration endpoint has
         data to bin. No-op until the bot has settled trades."""

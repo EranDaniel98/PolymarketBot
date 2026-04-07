@@ -15,7 +15,7 @@ from polymarket_weather.logging_filters import install_on_root as install_log_re
 logger = logging.getLogger("polymarket_weather.server")
 
 
-async def main():
+async def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
     # Install secret-redaction filter on the root logger BEFORE any other module
     # logs. This catches accidental leaks of private keys, telegram tokens, and

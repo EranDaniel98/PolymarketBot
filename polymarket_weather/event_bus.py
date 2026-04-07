@@ -17,7 +17,7 @@ Handler = Callable[[Any], Coroutine[Any, Any, None]]
 
 
 class EventBus:
-    def __init__(self):
+    def __init__(self) -> None:
         self._subscribers: dict[str, list[Handler]] = defaultdict(list)
 
     def subscribe(self, event_type: str, handler: Handler) -> None:

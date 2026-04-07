@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from datetime import datetime
 
+from typing import Any
+
 import sqlalchemy as sa
 from sqlalchemy import (
     BigInteger,
@@ -33,7 +35,7 @@ class _BigIntPK(TypeDecorator):
     impl = BigInteger
     cache_ok = True
 
-    def load_dialect_impl(self, dialect):
+    def load_dialect_impl(self, dialect: Any) -> Any:
         if dialect.name == "sqlite":
             return dialect.type_descriptor(Integer())
         return dialect.type_descriptor(BigInteger())

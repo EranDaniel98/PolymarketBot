@@ -8,6 +8,10 @@ named thresholds (freezing/boiling), and negative temperatures.
 
 import re
 from dataclasses import dataclass
+from typing import Callable
+
+# Type alias for the (match, city, metric, question) → ParsedMarket factories
+PatternFactory = Callable[[re.Match[str], str | None, str, str], "ParsedMarket"]
 
 
 @dataclass
@@ -129,9 +133,9 @@ _UNIT = r"(fahrenheit|celsius|f|c)"
 _UNIT_OPT = r"(fahrenheit|celsius|f|c)?"
 
 
-def _make_range(direction: str = "range"):
+def _make_range(direction: str = "range") -> PatternFactory:
     """Factory builder for two-bound range patterns."""
-    def factory(m, city, metric, question):
+    def factory(m: re.Match[str], city: str | None, metric: str, question: str) -> "ParsedMarket":
         unit = _unit_from_match(m.group(3))
         return ParsedMarket(
             city=city or "", metric=metric,
@@ -142,9 +146,9 @@ def _make_range(direction: str = "range"):
     return factory
 
 
-def _make_single(direction: str, unit_group: int = 2, *, fallback_detect: bool = False):
+def _make_single(direction: str, unit_group: int = 2, *, fallback_detect: bool = False) -> PatternFactory:
     """Factory builder for single-threshold patterns (above/below/etc)."""
-    def factory(m, city, metric, question):
+    def factory(m: re.Match[str], city: str | None, metric: str, question: str) -> "ParsedMarket":
         if fallback_detect and m.group(unit_group) is None:
             unit = _detect_unit(question)
         else:
@@ -158,9 +162,9 @@ def _make_single(direction: str, unit_group: int = 2, *, fallback_detect: bool =
     return factory
 
 
-def _named_threshold_factory(direction: str):
+def _named_threshold_factory(direction: str) -> PatternFactory:
     """Factory for 'above/below freezing/boiling' patterns."""
-    def factory(m, city, metric, question):
+    def factory(m: re.Match[str], city: str | None, metric: str, question: str) -> "ParsedMarket":
         name = m.group(1)
         unit = _detect_unit(question)
         thresholds = NAMED_THRESHOLDS_C if unit == "C" else NAMED_THRESHOLDS_F
@@ -173,8 +177,8 @@ def _named_threshold_factory(direction: str):
     return factory
 
 
-def _between_no_unit_factory():
-    def factory(m, city, metric, question):
+def _between_no_unit_factory() -> PatternFactory:
+    def factory(m: re.Match[str], city: str | None, metric: str, question: str) -> "ParsedMarket":
         return ParsedMarket(
             city=city or "", metric=metric,
             threshold=float(m.group(1)),
@@ -184,9 +188,9 @@ def _between_no_unit_factory():
     return factory
 
 
-def _degrees_or_dir_factory():
+def _degrees_or_dir_factory() -> PatternFactory:
     """Factory for 'X°F or above/below' — direction comes from the regex."""
-    def factory(m, city, metric, question):
+    def factory(m: re.Match[str], city: str | None, metric: str, question: str) -> "ParsedMarket":
         unit = _unit_from_match(m.group(2))
         return ParsedMarket(
             city=city or "", metric=metric,
@@ -197,7 +201,7 @@ def _degrees_or_dir_factory():
     return factory
 
 
-def _be_degrees_bucket_factory():
+def _be_degrees_bucket_factory() -> PatternFactory:
     """Factory for Polymarket's daily-temp bucket markets.
 
     Matches: 'Will the highest temperature in X be N°C on DATE?' (note: no
@@ -208,7 +212,7 @@ def _be_degrees_bucket_factory():
     We interpret as a range [N, N+2) to match the 2-degree bucket spacing.
     The scanner groups these buckets by event_id for multi-outcome handling.
     """
-    def factory(m, city, metric, question):
+    def factory(m: re.Match[str], city: str | None, metric: str, question: str) -> "ParsedMarket":
         unit = _unit_from_match(m.group(2))
         lower = float(m.group(1))
         return ParsedMarket(
@@ -220,9 +224,9 @@ def _be_degrees_bucket_factory():
     return factory
 
 
-def _be_degrees_or_below_factory():
+def _be_degrees_or_below_factory() -> PatternFactory:
     """Factory for 'Will ... be N°C or below on DATE?' — lower bound."""
-    def factory(m, city, metric, question):
+    def factory(m: re.Match[str], city: str | None, metric: str, question: str) -> "ParsedMarket":
         unit = _unit_from_match(m.group(2))
         return ParsedMarket(
             city=city or "", metric=metric,
@@ -233,9 +237,9 @@ def _be_degrees_or_below_factory():
     return factory
 
 
-def _be_degrees_or_above_factory():
+def _be_degrees_or_above_factory() -> PatternFactory:
     """Factory for 'Will ... be N°C or above on DATE?' — upper bound."""
-    def factory(m, city, metric, question):
+    def factory(m: re.Match[str], city: str | None, metric: str, question: str) -> "ParsedMarket":
         unit = _unit_from_match(m.group(2))
         return ParsedMarket(
             city=city or "", metric=metric,
@@ -247,7 +251,7 @@ def _be_degrees_or_above_factory():
 
 
 # Pattern table — most specific first.
-_PATTERNS: list[tuple[re.Pattern, callable]] = [
+_PATTERNS: list[tuple[re.Pattern[str], PatternFactory]] = [
     # --- Polymarket daily-temp bucket format (Phase 4 follow-up) -----------
     # "Will the highest temperature in X be N°C or below on DATE?"
     (
