@@ -19,7 +19,32 @@ export default function Calibration() {
       </p>
 
       {isLoading ? <p className="text-slate-400">Loading...</p> : data.length === 0 ? (
-        <p className="text-slate-500 text-center py-12">No calibration data yet. Need settled trades to compute.</p>
+        <div className="space-y-4">
+          <div className="bg-slate-800 rounded-lg p-6 border border-slate-700 text-center">
+            <p className="text-slate-300 font-bold mb-2">No calibration data yet</p>
+            <p className="text-slate-500 text-sm">
+              This chart populates once the bot has settled trades to compare
+              against. The calibration job runs daily and recomputes over the
+              last 90 days of resolved markets.
+            </p>
+          </div>
+          <div className="bg-slate-800 rounded-lg p-4 border border-slate-700 opacity-60">
+            <h3 className="text-sm font-bold text-slate-300 mb-4">Predicted vs Observed (preview)</h3>
+            <ResponsiveContainer width="100%" height={300}>
+              <ScatterChart margin={{ top: 10, right: 30, bottom: 10, left: 10 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
+                <XAxis type="number" dataKey="predicted" name="Predicted" domain={[0, 1]}
+                  tick={{ fill: '#94a3b8', fontSize: 12 }} label={{ value: 'Predicted P', position: 'bottom', fill: '#94a3b8' }} />
+                <YAxis type="number" dataKey="observed" name="Observed" domain={[0, 1]}
+                  tick={{ fill: '#94a3b8', fontSize: 12 }} label={{ value: 'Observed Rate', angle: -90, position: 'left', fill: '#94a3b8' }} />
+                <ReferenceLine segment={[{ x: 0, y: 0 }, { x: 1, y: 1 }]} stroke="#475569" strokeDasharray="5 5" />
+              </ScatterChart>
+            </ResponsiveContainer>
+            <p className="text-xs text-slate-500 text-center mt-2">
+              Dashed line = perfect calibration. Points above = under-confident; below = over-confident.
+            </p>
+          </div>
+        </div>
       ) : (
         <div className="space-y-6">
           {/* Reliability diagram */}

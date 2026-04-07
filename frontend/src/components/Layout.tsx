@@ -1,4 +1,5 @@
 import { NavLink, Outlet } from 'react-router-dom';
+import { clearApiKey } from '../api/client';
 
 const links = [
   { to: '/', label: 'Overview' },
@@ -7,10 +8,16 @@ const links = [
   { to: '/history', label: 'Trade History' },
   { to: '/weather', label: 'Weather' },
   { to: '/calibration', label: 'Calibration' },
+  { to: '/jobs', label: 'Jobs' },
   { to: '/config', label: 'Config' },
   { to: '/cities', label: 'City Mapping' },
   { to: '/logs', label: 'System Logs' },
 ];
+
+function handleLogout() {
+  clearApiKey();
+  window.location.reload();
+}
 
 export default function Layout() {
   return (
@@ -38,6 +45,12 @@ export default function Layout() {
             </NavLink>
           ))}
         </div>
+        <button
+          onClick={handleLogout}
+          className="px-4 py-3 text-xs text-slate-500 hover:text-slate-300 border-t border-slate-700 text-left"
+        >
+          Clear API key & log out
+        </button>
       </nav>
 
       {/* Main content */}

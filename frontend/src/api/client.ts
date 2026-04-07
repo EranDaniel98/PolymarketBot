@@ -1,19 +1,54 @@
 const BASE = '/api';
+const KEY_STORAGE = 'pmw_api_key';
 
-async function fetchJson<T>(path: string): Promise<T> {
-  const res = await fetch(`${BASE}${path}`);
+export function getApiKey(): string {
+  return localStorage.getItem(KEY_STORAGE) || '';
+}
+
+export function setApiKey(key: string): void {
+  localStorage.setItem(KEY_STORAGE, key);
+}
+
+export function clearApiKey(): void {
+  localStorage.removeItem(KEY_STORAGE);
+}
+
+function authHeaders(): Record<string, string> {
+  const key = getApiKey();
+  return key ? { 'X-API-Key': key } : {};
+}
+
+async function handleResponse<T>(res: Response): Promise<T> {
+  if (res.status === 401) {
+    clearApiKey();
+    window.location.reload();
+    throw new Error('Unauthorized');
+  }
   if (!res.ok) throw new Error(`API error: ${res.status}`);
   return res.json();
+}
+
+async function fetchJson<T>(path: string): Promise<T> {
+  const res = await fetch(`${BASE}${path}`, { headers: { ...authHeaders() } });
+  return handleResponse<T>(res);
 }
 
 async function putJson<T>(path: string, body: unknown): Promise<T> {
   const res = await fetch(`${BASE}${path}`, {
     method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...authHeaders() },
     body: JSON.stringify(body),
   });
-  if (!res.ok) throw new Error(`API error: ${res.status}`);
-  return res.json();
+  return handleResponse<T>(res);
+}
+
+async function postJson<T>(path: string, body: unknown): Promise<T> {
+  const res = await fetch(`${BASE}${path}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...authHeaders() },
+    body: JSON.stringify(body),
+  });
+  return handleResponse<T>(res);
 }
 
 // Types matching FastAPI response models
@@ -61,6 +96,21 @@ export interface SystemEvent {
   message: string | null; details: Record<string, unknown> | null; created_at: string;
 }
 
+export interface JobStatus {
+  name: string;
+  interval_seconds: number;
+  last_started_at: string | null;
+  last_finished_at: string | null;
+  last_duration_ms: number | null;
+  last_error: string | null;
+  last_error_at: string | null;
+  successes: number;
+  failures: number;
+  healthy: boolean;
+}
+
+export interface KillSwitchState { paused: boolean; available: boolean; }
+
 // API functions
 export const api = {
   overview: () => fetchJson<Overview>('/overview'),
@@ -74,4 +124,12 @@ export const api = {
   cities: () => fetchJson<CityMapping[]>('/cities'),
   updateCity: (mapping: CityMapping) => putJson('/cities', mapping),
   events: (severity?: string) => fetchJson<SystemEvent[]>(`/events${severity ? `?severity=${severity}` : ''}`),
+  jobs: () => fetchJson<JobStatus[]>('/jobs'),
+  killSwitch: () => fetchJson<KillSwitchState>('/kill_switch'),
+  setKillSwitch: (paused: boolean) => postJson<KillSwitchState>('/kill_switch', { paused }),
+
+  validateKey: async (key: string): Promise<boolean> => {
+    const res = await fetch(`${BASE}/overview`, { headers: { 'X-API-Key': key } });
+    return res.status !== 401;
+  },
 };
