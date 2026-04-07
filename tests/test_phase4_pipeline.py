@@ -129,7 +129,9 @@ def _make_pipeline(
     trade_lock = asyncio.Lock()
 
     edge_config = SimpleNamespace(
-        min_edge=0.05,
+        min_edge_metar=0.06,
+        min_edge_blend=0.08,
+        min_edge_nwp=0.12,
         min_liquidity_usdc=500,
         min_confidence=0.7,
         min_hours_to_resolution=2,

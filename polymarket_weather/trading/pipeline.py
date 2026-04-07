@@ -177,9 +177,15 @@ class MismatchPipeline:
         our_p = forecast_result.probability
         edge_result = compute_edge(our_p, scanned.current_price)
 
-        min_edge = get_min_edge_for_source(forecast_result.source)
-        if self.edge_config and self.edge_config.min_edge:
-            min_edge = max(min_edge, self.edge_config.min_edge)
+        # min_edge varies per forecast source: 0.06 metar, 0.08 blend, 0.12 nwp
+        # (configured in EdgeConfig.min_edge_{metar,blend,nwp}). The helper
+        # picks the right one given the source string.
+        min_edge = get_min_edge_for_source(
+            forecast_result.source,
+            min_edge_metar=getattr(self.edge_config, "min_edge_metar", 0.06) if self.edge_config else 0.06,
+            min_edge_blend=getattr(self.edge_config, "min_edge_blend", 0.08) if self.edge_config else 0.08,
+            min_edge_nwp=getattr(self.edge_config, "min_edge_nwp", 0.12) if self.edge_config else 0.12,
+        )
         if edge_result.raw_edge < min_edge:
             return PipelineResult(
                 scanned.market_id, "skipped", REASON_INSUFFICIENT_EDGE,

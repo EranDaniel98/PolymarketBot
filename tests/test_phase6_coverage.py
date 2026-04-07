@@ -429,7 +429,8 @@ class TestIntegrationSmokeTest:
             trade_lock=asyncio.Lock(),
             notifier=None,
             edge_config=SimpleNamespace(
-                min_edge=0.05, min_liquidity_usdc=500, min_confidence=0.7,
+                min_edge_metar=0.06, min_edge_blend=0.08, min_edge_nwp=0.12,
+                min_liquidity_usdc=500, min_confidence=0.7,
                 min_hours_to_resolution=2, max_hours_to_resolution=168,
                 kelly_fraction=0.5,
             ),
