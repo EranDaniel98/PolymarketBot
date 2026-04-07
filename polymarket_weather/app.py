@@ -175,6 +175,46 @@ async def run_bot(config_path: str = "config.yaml") -> None:
     # Phase 2.1: reconcile open positions from DB on startup so state survives
     # process restarts. Any in-memory dict from a prior run is gone, but the
     # DB has every status='open' trade with full metadata.
+    # One-shot: backfill event_slug for trades that already have an event_id
+    # but were inserted before the slug column existed. Idempotent (only
+    # touches rows with NULL/empty slug). Safe to leave in place permanently
+    # — it's a no-op once everything is filled.
+    try:
+        import httpx as _httpx
+        import sqlalchemy as _sa
+        async with session_factory() as _s:
+            _r = await _s.execute(_sa.text(
+                "SELECT DISTINCT event_id FROM trades WHERE event_id IS NOT NULL "
+                "AND (event_slug IS NULL OR event_slug = '')"
+            ))
+            _eids = [row[0] for row in _r.all() if row[0]]
+        if _eids:
+            logger.info("event_slug backfill: looking up %d events", len(_eids))
+            async with _httpx.AsyncClient(timeout=15) as _c:
+                _slugs: dict[str, str] = {}
+                for _eid in _eids:
+                    try:
+                        _resp = await _c.get(f"https://gamma-api.polymarket.com/events/{_eid}")
+                        if _resp.status_code == 200:
+                            _data = _resp.json()
+                            if isinstance(_data, list) and _data:
+                                _data = _data[0]
+                            if isinstance(_data, dict) and _data.get("slug"):
+                                _slugs[_eid] = str(_data["slug"])
+                    except Exception:
+                        pass
+            if _slugs:
+                async with session_factory() as _s:
+                    for _eid, _slug in _slugs.items():
+                        await _s.execute(_sa.text(
+                            "UPDATE trades SET event_slug = :slug WHERE event_id = :eid "
+                            "AND (event_slug IS NULL OR event_slug = '')"
+                        ), {"slug": _slug, "eid": _eid})
+                    await _s.commit()
+                logger.info("event_slug backfill: updated %d events", len(_slugs))
+    except Exception:
+        logger.exception("event_slug backfill failed (non-fatal)")
+
     open_rows = await persistence.load_open_positions(session_factory)
     for r in open_rows:
         positions._positions[r.market_id] = TrackedPosition(
