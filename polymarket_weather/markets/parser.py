@@ -197,8 +197,74 @@ def _degrees_or_dir_factory():
     return factory
 
 
+def _be_degrees_bucket_factory():
+    """Factory for Polymarket's daily-temp bucket markets.
+
+    Matches: 'Will the highest temperature in X be N°C on DATE?' (note: no
+    direction word — the question is 'will it be exactly N'). Polymarket
+    uses 2°C/2°F buckets where each individual market is a single bucket;
+    the resolution rule is 'temperature rounds to exactly this value'.
+
+    We interpret as a range [N, N+2) to match the 2-degree bucket spacing.
+    The scanner groups these buckets by event_id for multi-outcome handling.
+    """
+    def factory(m, city, metric, question):
+        unit = _unit_from_match(m.group(2))
+        lower = float(m.group(1))
+        return ParsedMarket(
+            city=city or "", metric=metric,
+            threshold=lower,
+            threshold_upper=lower + 2.0,  # 2-degree bucket
+            unit=unit, direction="range",
+        )
+    return factory
+
+
+def _be_degrees_or_below_factory():
+    """Factory for 'Will ... be N°C or below on DATE?' — lower bound."""
+    def factory(m, city, metric, question):
+        unit = _unit_from_match(m.group(2))
+        return ParsedMarket(
+            city=city or "", metric=metric,
+            threshold=float(m.group(1)),
+            threshold_upper=None,
+            unit=unit, direction="below",
+        )
+    return factory
+
+
+def _be_degrees_or_above_factory():
+    """Factory for 'Will ... be N°C or above on DATE?' — upper bound."""
+    def factory(m, city, metric, question):
+        unit = _unit_from_match(m.group(2))
+        return ParsedMarket(
+            city=city or "", metric=metric,
+            threshold=float(m.group(1)),
+            threshold_upper=None,
+            unit=unit, direction="above",
+        )
+    return factory
+
+
 # Pattern table — most specific first.
 _PATTERNS: list[tuple[re.Pattern, callable]] = [
+    # --- Polymarket daily-temp bucket format (Phase 4 follow-up) -----------
+    # "Will the highest temperature in X be N°C or below on DATE?"
+    (
+        re.compile(rf"be\s+{_NUM}\s*°?\s*{_UNIT}\s+or\s+below"),
+        _be_degrees_or_below_factory(),
+    ),
+    # "Will the highest temperature in X be N°C or above on DATE?"
+    (
+        re.compile(rf"be\s+{_NUM}\s*°?\s*{_UNIT}\s+or\s+above"),
+        _be_degrees_or_above_factory(),
+    ),
+    # "Will the highest temperature in X be N°C on DATE?" (single 2-degree bucket)
+    (
+        re.compile(rf"be\s+{_NUM}\s*°?\s*{_UNIT}\s+on\b"),
+        _be_degrees_bucket_factory(),
+    ),
+
     # Range patterns (must precede single-value)
     (
         re.compile(rf"be\s+between\s+{_NUM}\s+and\s+{_NUM}\s+degrees?\s*{_UNIT}"),

@@ -178,5 +178,77 @@
     "country": "MX",
     "lat": 19.4363,
     "lon": -99.0721
+  },
+  {
+    "city_aliases": ["hong kong"],
+    "stations": ["VHHH"],
+    "primary_station": "VHHH",
+    "region": "east_asia",
+    "country": "HK",
+    "lat": 22.3080,
+    "lon": 113.9185
+  },
+  {
+    "city_aliases": ["taipei"],
+    "stations": ["RCTP"],
+    "primary_station": "RCTP",
+    "region": "east_asia",
+    "country": "TW",
+    "lat": 25.0777,
+    "lon": 121.2328
+  },
+  {
+    "city_aliases": ["busan"],
+    "stations": ["RKPK"],
+    "primary_station": "RKPK",
+    "region": "korea",
+    "country": "KR",
+    "lat": 35.1795,
+    "lon": 128.9380
+  },
+  {
+    "city_aliases": ["amsterdam"],
+    "stations": ["EHAM"],
+    "primary_station": "EHAM",
+    "region": "europe",
+    "country": "NL",
+    "lat": 52.3086,
+    "lon": 4.7639
+  },
+  {
+    "city_aliases": ["munich"],
+    "stations": ["EDDM"],
+    "primary_station": "EDDM",
+    "region": "europe",
+    "country": "DE",
+    "lat": 48.3537,
+    "lon": 11.7750
+  },
+  {
+    "city_aliases": ["ankara"],
+    "stations": ["LTAC"],
+    "primary_station": "LTAC",
+    "region": "europe",
+    "country": "TR",
+    "lat": 40.1281,
+    "lon": 32.9951
+  },
+  {
+    "city_aliases": ["lucknow"],
+    "stations": ["VILK"],
+    "primary_station": "VILK",
+    "region": "south_asia",
+    "country": "IN",
+    "lat": 26.7606,
+    "lon": 80.8893
+  },
+  {
+    "city_aliases": ["austin"],
+    "stations": ["KAUS"],
+    "primary_station": "KAUS",
+    "region": "southwest_us",
+    "country": "US",
+    "lat": 30.1945,
+    "lon": -97.6699
   }
 ]
