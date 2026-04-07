@@ -69,6 +69,7 @@ export interface Position {
   market_id: string; direction: string; entry_price: number; size_usdc: number;
   current_price: number | null; unrealized_pnl: number; city: string;
   event_id: string; entry_time: string; peak_pnl_pct: number;
+  event_slug: string; polymarket_url: string;
 }
 
 export interface Trade {
@@ -76,6 +77,8 @@ export interface Trade {
   token_id: string | null; size_usdc: number | null; fill_price: number | null;
   status: string; pnl_usdc: number | null; settlement_result: string | null;
   placed_at: string | null; exit_reason: string | null;
+  direction: string | null; city: string | null;
+  event_slug: string | null; polymarket_url: string | null;
 }
 
 export interface WeatherStation {

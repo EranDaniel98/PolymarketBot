@@ -14,6 +14,7 @@ class TrackedPosition:
     event_id: str
     entry_time: datetime
     peak_pnl_pct: float = 0.0
+    event_slug: str = ""   # used to build https://polymarket.com/event/{slug}
 
     def compute_pnl(self, current_price: float) -> float:
         """Compute unrealized PnL based on current market price."""
@@ -70,11 +71,12 @@ class PositionManager:
     def track_entry(
         self, market_id: str, direction: str, entry_price: float,
         size_usdc: float, city: str, event_id: str,
+        event_slug: str = "",
     ) -> None:
         self._positions[market_id] = TrackedPosition(
             market_id=market_id, direction=direction,
             entry_price=entry_price, size_usdc=size_usdc,
-            city=city, event_id=event_id,
+            city=city, event_id=event_id, event_slug=event_slug,
             entry_time=datetime.now(timezone.utc),
         )
 

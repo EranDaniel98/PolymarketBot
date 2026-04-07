@@ -281,6 +281,7 @@ class MismatchPipeline:
                         event_id=scanned.event_id,
                         entry_time=datetime.now(timezone.utc),
                         peak_pnl_pct=0.0,
+                        event_slug=scanned.event_slug,
                     ),
                 )
             except Exception:
@@ -293,6 +294,7 @@ class MismatchPipeline:
                 size_usdc=size,
                 city=city_match.city_name,
                 event_id=scanned.event_id,
+                event_slug=scanned.event_slug,
             )
             self.risk.record_entry(
                 scanned.market_id, city_match.city_name, city_match.region, size,

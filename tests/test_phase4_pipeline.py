@@ -49,6 +49,7 @@ def _make_scanned(
         market_id=market_id,
         question=question,
         event_id="evt_1",
+        event_slug="highest-temperature-in-test-on-april-1",
         yes_token_id="yes_token",
         no_token_id="no_token",
         current_price=yes_price,

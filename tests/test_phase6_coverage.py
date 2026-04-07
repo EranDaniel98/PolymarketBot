@@ -446,6 +446,7 @@ class TestIntegrationSmokeTest:
             market_id="0xintegration",
             question="Will the high temperature in New York City be above 75 degrees on April 10?",
             event_id="evt_int",
+            event_slug="highest-temperature-in-nyc-on-april-10",
             yes_token_id="yes_token", no_token_id="no_token",
             current_price=0.40, no_price=0.60,
             end_date=datetime.now(timezone.utc) + timedelta(hours=24),

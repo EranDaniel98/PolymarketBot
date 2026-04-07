@@ -46,6 +46,7 @@ _TRADE_COLUMN_ADDS: list[tuple[str, str]] = [
     ("city", "VARCHAR(100)"),
     ("region", "VARCHAR(50)"),
     ("event_id", "VARCHAR(100)"),
+    ("event_slug", "VARCHAR(200)"),
     ("peak_pnl_pct", "NUMERIC(8, 4)"),
 ]
 
@@ -97,6 +98,7 @@ class PersistedPosition:
     event_id: str
     entry_time: datetime
     peak_pnl_pct: float
+    event_slug: str = ""
 
 
 async def persist_position_entry(
@@ -119,6 +121,7 @@ async def persist_position_entry(
             city=position.city,
             region=position.region,
             event_id=position.event_id,
+            event_slug=position.event_slug or None,
             size_usdc=position.size_usdc,
             fill_price=position.entry_price,
             peak_pnl_pct=position.peak_pnl_pct,
@@ -212,6 +215,7 @@ async def load_open_positions(
             event_id=r.event_id or "",
             entry_time=r.placed_at,
             peak_pnl_pct=float(r.peak_pnl_pct or 0.0),
+            event_slug=r.event_slug or "",
         ))
     logger.info("Reconciled %d open positions from DB", len(out))
     return out

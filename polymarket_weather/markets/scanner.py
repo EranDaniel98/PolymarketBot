@@ -16,6 +16,7 @@ class ScannedMarket:
     market_id: str          # conditionId
     question: str
     event_id: str           # Parent event ID for grouping
+    event_slug: str         # Parent event slug — used to build polymarket.com/event/{slug}
     yes_token_id: str
     no_token_id: str
     current_price: float    # YES price
@@ -86,6 +87,7 @@ def parse_gamma_event(event: dict) -> list[ScannedMarket]:
     Skips markets that are inactive or closed, or that lack token IDs.
     """
     event_id = str(event.get("id", ""))
+    event_slug = str(event.get("slug", ""))
     markets_data = event.get("markets", [])
 
     category = ""
@@ -123,6 +125,7 @@ def parse_gamma_event(event: dict) -> list[ScannedMarket]:
             market_id=condition_id,
             question=m.get("question", m.get("title", "")),
             event_id=event_id,
+            event_slug=event_slug,
             yes_token_id=tokens[0],
             no_token_id=tokens[1],
             current_price=yes_price,

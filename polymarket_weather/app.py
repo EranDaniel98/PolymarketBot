@@ -184,6 +184,7 @@ async def run_bot(config_path: str = "config.yaml") -> None:
             size_usdc=r.size_usdc,
             city=r.city,
             event_id=r.event_id,
+            event_slug=r.event_slug,
             entry_time=r.entry_time,
             peak_pnl_pct=r.peak_pnl_pct,
         )

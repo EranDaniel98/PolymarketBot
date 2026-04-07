@@ -190,6 +190,7 @@ class Trade(Base):
     city: Mapped[str | None] = mapped_column(String(100), nullable=True)
     region: Mapped[str | None] = mapped_column(String(50), nullable=True)
     event_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    event_slug: Mapped[str | None] = mapped_column(String(200), nullable=True)
     peak_pnl_pct: Mapped[float | None] = mapped_column(Numeric(8, 4), nullable=True)
 
     token_id: Mapped[str | None] = mapped_column(String(100), nullable=True)

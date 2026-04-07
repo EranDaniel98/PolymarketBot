@@ -26,6 +26,8 @@ export default function History() {
           <thead className="bg-slate-800 text-slate-400 uppercase text-xs">
             <tr>
               <th className="px-4 py-3">Date</th>
+              <th className="px-4 py-3">Market</th>
+              <th className="px-4 py-3">Side</th>
               <th className="px-4 py-3">Size</th>
               <th className="px-4 py-3">Price</th>
               <th className="px-4 py-3">Status</th>
@@ -38,6 +40,29 @@ export default function History() {
             {data.map(t => (
               <tr key={t.id} className="border-b border-slate-700 hover:bg-slate-800/50">
                 <td className="px-4 py-3 text-xs text-slate-400">{t.placed_at ? new Date(t.placed_at).toLocaleString() : '—'}</td>
+                <td className="px-4 py-3 text-white">
+                  {t.polymarket_url ? (
+                    <a
+                      href={t.polymarket_url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-blue-400 hover:text-blue-300 hover:underline inline-flex items-center gap-1"
+                      title={t.event_slug || ''}
+                    >
+                      {t.city || (t.market_id ? t.market_id.slice(0, 12) : '—')}
+                      <span className="text-xs opacity-60">↗</span>
+                    </a>
+                  ) : (
+                    t.city || (t.market_id ? t.market_id.slice(0, 12) : '—')
+                  )}
+                </td>
+                <td className="px-4 py-3">
+                  {t.direction && (
+                    <span className={`px-2 py-0.5 rounded text-xs font-bold ${t.direction === 'YES' ? 'bg-green-500/20 text-green-400' : 'bg-red-500/20 text-red-400'}`}>
+                      {t.direction}
+                    </span>
+                  )}
+                </td>
                 <td className="px-4 py-3">{t.size_usdc != null ? `$${t.size_usdc.toFixed(2)}` : '—'}</td>
                 <td className="px-4 py-3">{t.fill_price != null ? `$${t.fill_price.toFixed(4)}` : '—'}</td>
                 <td className="px-4 py-3"><span className="px-2 py-0.5 rounded text-xs bg-slate-700">{t.status}</span></td>
@@ -48,7 +73,7 @@ export default function History() {
                 <td className="px-4 py-3 text-xs text-slate-400">{t.exit_reason || '—'}</td>
               </tr>
             ))}
-            {data.length === 0 && <tr><td colSpan={7} className="px-4 py-8 text-center text-slate-500">No trades yet</td></tr>}
+            {data.length === 0 && <tr><td colSpan={9} className="px-4 py-8 text-center text-slate-500">No trades yet</td></tr>}
           </tbody>
         </table>
       )}

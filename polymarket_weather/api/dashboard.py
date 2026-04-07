@@ -88,6 +88,8 @@ class PositionItem(BaseModel):
     unrealized_pnl: float = 0.0
     city: str = ""
     event_id: str = ""
+    event_slug: str = ""
+    polymarket_url: str = ""
     entry_time: str = ""
     peak_pnl_pct: float = 0.0
 
@@ -104,6 +106,10 @@ class TradeItem(BaseModel):
     settlement_result: str | None = None
     placed_at: str | None = None
     exit_reason: str | None = None
+    event_slug: str | None = None
+    polymarket_url: str | None = None
+    direction: str | None = None
+    city: str | None = None
 
 
 class WeatherStationItem(BaseModel):
@@ -224,10 +230,13 @@ async def get_positions() -> Any:
         return []
     items = []
     for mid, pos in state.positions.positions.items():
+        slug = getattr(pos, "event_slug", "") or ""
         items.append(PositionItem(
             market_id=mid, direction=pos.direction,
             entry_price=pos.entry_price, size_usdc=pos.size_usdc,
             city=pos.city, event_id=pos.event_id,
+            event_slug=slug,
+            polymarket_url=f"https://polymarket.com/event/{slug}" if slug else "",
             entry_time=pos.entry_time.isoformat(),
             peak_pnl_pct=pos.peak_pnl_pct,
         ))
@@ -247,13 +256,19 @@ async def get_trade_history(limit: int = 100, offset: int = 0) -> Any:
         result = await session.execute(query)
         rows = result.scalars().all()
         return [TradeItem(
-            id=r.id, market_id=None, token_id=r.token_id,
+            id=r.id, market_id=r.market_id, token_id=r.token_id,
             size_usdc=float(r.size_usdc) if r.size_usdc else None,
             fill_price=float(r.fill_price) if r.fill_price else None,
             status=r.status, pnl_usdc=float(r.pnl_usdc) if r.pnl_usdc else None,
             settlement_result=r.settlement_result,
             placed_at=r.placed_at.isoformat() if r.placed_at else None,
             exit_reason=r.exit_reason,
+            direction=r.direction,
+            city=r.city,
+            event_slug=r.event_slug,
+            polymarket_url=(
+                f"https://polymarket.com/event/{r.event_slug}" if r.event_slug else None
+            ),
         ) for r in rows]
 
 

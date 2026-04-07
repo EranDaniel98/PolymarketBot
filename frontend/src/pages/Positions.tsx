@@ -24,7 +24,22 @@ export default function Positions() {
             <tbody>
               {data.map((pos) => (
                 <tr key={pos.market_id} className="border-b border-slate-700 hover:bg-slate-800/50">
-                  <td className="px-4 py-3 text-white font-medium">{pos.city || pos.market_id.slice(0, 12)}</td>
+                  <td className="px-4 py-3 text-white font-medium">
+                    {pos.polymarket_url ? (
+                      <a
+                        href={pos.polymarket_url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-blue-400 hover:text-blue-300 hover:underline inline-flex items-center gap-1"
+                        title={`Open ${pos.event_slug} on Polymarket`}
+                      >
+                        {pos.city || pos.market_id.slice(0, 12)}
+                        <span className="text-xs opacity-60">↗</span>
+                      </a>
+                    ) : (
+                      pos.city || pos.market_id.slice(0, 12)
+                    )}
+                  </td>
                   <td className="px-4 py-3">
                     <span className={`px-2 py-0.5 rounded text-xs font-bold ${pos.direction === 'YES' ? 'bg-green-500/20 text-green-400' : 'bg-red-500/20 text-red-400'}`}>
                       {pos.direction}
