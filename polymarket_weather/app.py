@@ -105,6 +105,7 @@ async def run_bot(config_path: str = "config.yaml"):
         discovery_endpoint=config.markets.discovery_endpoint,
         weather_tag_discovery=config.markets.weather_tag_discovery,
         fallback_keywords=config.markets.fallback_keywords,
+        weather_tag_id=config.markets.weather_tag_id,
     )
     await scanner.start()
 

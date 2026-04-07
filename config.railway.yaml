@@ -48,7 +48,11 @@ forecast:
 markets:
   scan_interval: 300
   discovery_interval: 900
-  gamma_api_url: "https://gamma-api.polymarket.com/markets"
+  gamma_api_url: "https://gamma-api.polymarket.com"
+  # Hardcoded tag ID for 'temperature' (103040) — runtime discovery by label
+  # is unreliable and the temperature tag is narrower + more useful than the
+  # broader 'weather' tag (84) which also covers earthquakes/measles/volcanoes.
+  weather_tag_id: 103040
   weather_tags: ["weather", "temperature", "climate"]
   allowed_metrics: ["temperature"]
 

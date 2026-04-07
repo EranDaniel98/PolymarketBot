@@ -146,6 +146,7 @@ class WeatherMarketScanner:
         weather_tag_discovery: bool = True,
         fallback_keywords: list[str] | None = None,
         max_markets: int = 500,
+        weather_tag_id: int | None = None,
     ):
         self._base_url = gamma_api_url
         self._discovery_endpoint = discovery_endpoint
@@ -153,11 +154,16 @@ class WeatherMarketScanner:
         self._fallback_keywords = fallback_keywords or ["temperature", "weather", "degrees"]
         self._max_markets = max_markets
         self._http: httpx.AsyncClient | None = None
-        self._weather_tag_id: int | None = None
+        # Explicit override beats runtime discovery. Gamma's /tags endpoint
+        # doesn't surface the narrow 'temperature' tag reliably, so we pin
+        # 103040 from config and skip discovery entirely when provided.
+        self._weather_tag_id: int | None = weather_tag_id
 
     async def start(self) -> None:
         self._http = httpx.AsyncClient(timeout=30)
-        if self._weather_tag_discovery:
+        if self._weather_tag_id is not None:
+            logger.info("Using configured weather tag ID: %s", self._weather_tag_id)
+        elif self._weather_tag_discovery:
             await self._discover_weather_tag()
 
     async def stop(self) -> None:

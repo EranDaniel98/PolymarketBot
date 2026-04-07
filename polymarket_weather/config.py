@@ -91,6 +91,9 @@ class MarketsConfig:
     gamma_api_url: str = "https://gamma-api.polymarket.com"
     discovery_endpoint: str = "/events"
     weather_tag_discovery: bool = True
+    # Explicit tag ID override (skips runtime discovery when set). 103040 =
+    # 'temperature' on Polymarket Gamma, the narrow daily-high-temp tag.
+    weather_tag_id: int | None = 103040
     fallback_keywords: list[str] = field(
         default_factory=lambda: ["temperature", "weather", "degrees", "high temp"]
     )
