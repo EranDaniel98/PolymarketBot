@@ -45,7 +45,7 @@ class TafConfig:
 @dataclass
 class NwpConfig:
     poll_interval: int = 21600
-    api_url: str = "https://api.open-meteo.com/v1/ensemble"
+    api_url: str = "https://ensemble-api.open-meteo.com/v1/ensemble"
     models: list[str] = field(default_factory=lambda: ["ecmwf_ifs025"])
     deterministic_url: str = "https://api.open-meteo.com/v1/forecast"
     deterministic_models: list[str] = field(

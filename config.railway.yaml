@@ -34,7 +34,7 @@ weather:
     api_url: "https://aviationweather.gov/api/data/taf"
   nwp:
     poll_interval: 21600
-    api_url: "https://api.open-meteo.com/v1/ensemble"
+    api_url: "https://ensemble-api.open-meteo.com/v1/ensemble"
     models: ["ecmwf_ifs025"]
 
 forecast:
