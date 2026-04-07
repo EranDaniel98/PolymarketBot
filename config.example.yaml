@@ -1,120 +1,230 @@
+# ============================================================
+# Polymarket Weather Arbitrage Bot — Example Configuration
+# ============================================================
+# Copy this file to config.yaml and fill in your secrets.
+# All secrets should be set via environment variables (see
+# .env.example) or left empty here. Numeric parameters have
+# their documented defaults. DB risk_config table overrides
+# YAML for risk parameters at runtime (hot-reloadable).
+# ============================================================
+
+# ----------------------------------------------------------
+# Polymarket CLOB API credentials
+# Set via env vars: POLYMARKET_API_KEY, POLYMARKET_API_SECRET,
+# POLYMARKET_PRIVATE_KEY
+# ----------------------------------------------------------
 polymarket:
-  api_key: "your-api-key"
-  api_secret: "your-api-secret"
-  private_key: "your-eth-private-key"
-  chain_id: 137  # Polygon
+  api_key: ""
+  api_secret: ""
+  private_key: ""
+  chain_id: 137  # Polygon mainnet
 
-signals:
-  news:
-    enabled: false                  # Disabled — keyword matching is noise, LLM reads headlines directly
-    poll_interval: 300
-    weight: 0.00
-    newsapi_key: "your-newsapi-key"
-  social:
-    enabled: false                  # Disabled — Reddit sentiment is lagging/contrarian
-    poll_interval: 600
-    weight: 0.00
-  polls:
-    enabled: true
-    poll_interval: 3600
-    weight: 0.10
-  llm:
-    enabled: true
-    weight: 0.25
-    model: "claude-sonnet-4-20250514"
-    screening_model: "claude-3-haiku-20240307"  # Cheap screening before expensive analysis
-    anthropic_api_key: "your-anthropic-key"
-    openai_api_key: "your-openai-key"
-    ensemble_enabled: true
-    aggregation: "trimmed_mean"
-    ensemble_models:
-      - provider: "anthropic"
-        model: "claude-sonnet-4-20250514"
-        weight: 0.40
-      - provider: "openai"
-        model: "gpt-4o"
-        weight: 0.35
-      - provider: "anthropic"
-        model: "claude-sonnet-4-20250514"
-        weight: 0.25
-  bookmaker:
-    enabled: true
-    poll_interval: 60
-    weight: 0.10
-    odds_api_key: "your-odds-api-key"
-  favorite_longshot:
-    enabled: true                   # Zero-cost signal exploiting favorite-longshot bias
-    weight: 0.20
-    min_price_short: 0.92           # Short contracts above this price
-    max_price_long: 0.08            # Buy contracts below this price
-    min_volume: 5000                # Minimum market volume for liquidity
-    min_days: 3                     # Minimum days to resolution
-  divergence:
-    enabled: true                   # Cross-platform divergence (Metaculus + Manifold)
-    weight: 0.15
-    min_divergence: 0.08            # Minimum price gap to trigger
-    min_forecasters: 50             # Minimum forecaster count on other platform
-    min_days: 3
-  weather:
-    enabled: true                   # Weather forecast vs market price (73% documented win rate)
-    weight: 0.20
-  whale:
-    enabled: true
-    weight: 0.15
-    poll_interval: 30
-    single_trade_threshold: 10000
-    cumulative_threshold: 25000
-    window_seconds: 300
-  fast_trader:
-    enabled: false                  # Disabled — fires on Reddit headlines, false positives
+# ----------------------------------------------------------
+# PostgreSQL database connection
+# Set via env var: DATABASE_URL
+# ----------------------------------------------------------
+database:
+  url: "postgresql+asyncpg://user:pass@localhost:5432/polymarket_weather"
 
-arbitrage:
-  poll_interval: 30
-  min_spread: 0.05
-  structural_arb:
-    enabled: true
-    fee_rate: 0.02
-    min_profit_pct: 0.005
-    max_position_usd: 50
-    cancel_timeout: 60
-  platforms:
-    kalshi:
-      enabled: true
-    manifold:
-      enabled: true
+# ----------------------------------------------------------
+# Weather data sources
+# metar: Aviation weather reports (ground truth, +/-0.1C)
+# taf:   Terminal aerodrome forecasts (24-30h horizon)
+# nwp:   Numerical weather predictions (30h-7d horizon)
+# ----------------------------------------------------------
+weather:
+  metar:
+    # Seconds between METAR polling cycles
+    poll_interval: 1800
+    # Seconds before a station is considered stale (3 hours)
+    stale_threshold: 10800
+    api_url: "https://aviationweather.gov/api/data/metar"
+    # How many hours of history to fetch per poll
+    hours_lookback: 3
+  taf:
+    # Seconds between TAF polling cycles (6 hours)
+    poll_interval: 21600
+    api_url: "https://aviationweather.gov/api/data/taf"
+  nwp:
+    # Seconds between NWP polling cycles (6 hours)
+    poll_interval: 21600
+    api_url: "https://api.open-meteo.com/v1/forecast"
+    # Models to query per city — ensemble spread drives confidence
+    models: ["gfs", "ecmwf_ifs025", "icon_global"]
 
-risk:
-  max_position_pct: 0.10          # Max 10% per market ($30 on $300 bankroll)
-  max_exposure_pct: 0.60          # Max 60% total exposure
-  max_daily_loss_pct: 0.08        # Circuit breaker at 8% daily loss ($24)
-  max_correlated_exposure_pct: 0.20
-  min_edge: 0.05                  # Only trade with >=5% edge (more selective with small bankroll)
+# ----------------------------------------------------------
+# Forecast engine blending parameters
+# Regime selection is based on hours-to-resolution:
+#   < metar_only_hours         => METAR trend only
+#   metar_only to blend_cutoff => METAR + TAF blend
+#   > blend_cutoff             => NWP ensemble
+# ----------------------------------------------------------
+forecast:
+  # Hours to resolution below which we use METAR only
+  metar_only_hours: 6
+  # Hours to resolution below which we blend METAR + TAF
+  blend_cutoff_hours: 30
+  # Weight given to METAR in the METAR+TAF blend (rest goes to TAF)
+  metar_blend_weight: 0.6
+  # Minimum confidence to generate a forecast (0-1)
+  min_confidence: 0.70
+  # Stricter minimum confidence for long-range (NWP) forecasts
+  long_range_min_confidence: 0.80
+  # Days out at which long_range_min_confidence applies
+  long_range_days: 5
+
+# ----------------------------------------------------------
+# Market discovery and scanning
+# ----------------------------------------------------------
+markets:
+  # Seconds between mismatch detection scans
+  scan_interval: 300
+  # Seconds between full market discovery sweeps
+  discovery_interval: 900
+  gamma_api_url: "https://gamma-api.polymarket.com/markets"
+  # Tags used to filter weather-related markets
+  weather_tags: ["weather", "temperature", "climate"]
+  # Metrics we know how to forecast (extend as engine grows)
+  allowed_metrics: ["temperature"]
+
+# ----------------------------------------------------------
+# Edge detection and opportunity filtering
+# ----------------------------------------------------------
+edge:
+  # Minimum probability edge to flag an opportunity (our_p - market_p)
+  min_edge: 0.12
+  # Minimum market liquidity in USDC to consider trading
+  min_liquidity_usdc: 500
+  # Minimum forecast confidence to enter a position
+  min_confidence: 0.70
+  # Ignore markets resolving sooner than this (hours)
+  min_hours_to_resolution: 2
+  # Ignore markets resolving later than this (hours, = 7 days)
+  max_hours_to_resolution: 168
+  # Kelly fraction to apply (0.5 = half-Kelly)
   kelly_fraction: 0.5
-  bootstrap_trades: 20            # Fewer bootstrap trades before switching to Kelly
-  bootstrap_size_pct: 0.04        # 4% per trade during bootstrap ($12 — above $10 minimum)
-  cooldown_seconds: 300
 
-execution:
-  default_order_type: "limit"
-  max_slippage: 0.01
+# ----------------------------------------------------------
+# Risk management
+# Override individual keys at runtime via DB risk_config table
+# ----------------------------------------------------------
+risk:
+  # Maximum USDC size for a single position
+  max_position_usdc: 50
+  # Minimum trade size — below this we skip
+  min_trade_size_usdc: 5
+  # Maximum number of open positions at any time
+  max_open_positions: 20
+  # Daily loss cap in USDC — halt trading when breached
+  daily_loss_cap_usdc: 200
+  # Maximum total exposure across all markets in one city
+  max_exposure_per_city_usdc: 150
+  # Maximum total exposure across all markets on one date
+  max_exposure_per_date_usdc: 200
+  # Drawdown fraction that triggers a trading pause
+  drawdown_pause_pct: 0.15
+
+# ----------------------------------------------------------
+# Order execution
+# ----------------------------------------------------------
+trading:
+  # Order type: "limit" or "market"
+  order_type: "limit"
+  # Maximum tolerated slippage as a fraction of price
+  slippage_tolerance: 0.02
+  # Retries on transient CLOB API errors
   max_retries: 3
-  paper_trading: true             # Set to false for real trading with real money
+  # Exit position automatically when edge inverts
+  exit_on_edge_inversion: true
+  # Edge below this triggers an exit (negative = against us)
+  edge_inversion_threshold: -0.05
+  # Paper trading mode — no real orders are placed
+  paper_trading: true
+  # Starting virtual balance for paper trading in USDC
+  paper_balance: 1000
+  # Cancel open orders this many minutes before market resolves
+  cancel_before_resolution_minutes: 90
 
+# ----------------------------------------------------------
+# Cities configuration file path
+# The file maps city names/aliases to ICAO station codes
+# ----------------------------------------------------------
+cities:
+  file: "config/cities.json"
+
+# ----------------------------------------------------------
+# Scheduler job intervals (seconds unless noted)
+# ----------------------------------------------------------
+scheduler:
+  metar_poll: 1800
+  taf_poll: 21600
+  nwp_poll: 21600
+  market_scan: 300
+  market_discovery: 900
+  mismatch_detection: 300
+  trade_execution: 60
+  position_monitor: 120
+  settlement_check: 600
+  stale_data_check: 900
+  # Daily report time (HH:MM, local server time)
+  daily_report: "08:00"
+  # Calibration update time (HH:MM, local server time)
+  calibration_update: "06:00"
+
+# ----------------------------------------------------------
+# Telegram alert notifications
+# Set via env vars: TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
+# ----------------------------------------------------------
 notifications:
   telegram:
     enabled: true
-    bot_token: "your-bot-token"
-    chat_id: "your-chat-id"
-    approval_timeout: 300
-  discord:
-    enabled: false
-    webhook_url: ""
+    bot_token: ""   # Set via TELEGRAM_BOT_TOKEN env var
+    chat_id: ""     # Set via TELEGRAM_CHAT_ID env var
+    alert_on:
+      opportunity_found: true
+      trade_placed: true
+      trade_settled: true
+      risk_limit_approached: true
+      data_stale: true
+      system_error: true
 
-confidence_thresholds:
-  auto_execute: 0.85              # Higher bar for auto-trades (protect small bankroll)
-  notify: 0.55                    # Notify you on medium-confidence for manual decision
+# ----------------------------------------------------------
+# Forecast calibration tracking
+# Compares our predicted P to actual outcomes for Brier scoring
+# ----------------------------------------------------------
+calibration:
+  # Minimum number of resolved trades to start calibration reporting
+  min_samples: 30
+  # Recalibration window in days
+  lookback_days: 90
 
+# ----------------------------------------------------------
+# Structured logging (structlog + JSONL file)
+# ----------------------------------------------------------
+logging:
+  file_enabled: true
+  file_path: "logs/bot.jsonl"
+  # Max size before rotation (MB)
+  max_size_mb: 50
+  # Number of rotated backup files to keep
+  backup_count: 5
+
+# ----------------------------------------------------------
+# Web dashboard (FastAPI)
+# Set via env var: DASH_PASS (basic auth password)
+# ----------------------------------------------------------
 web:
-  enabled: false                  # Set to true to enable web dashboard
+  enabled: true
   host: "127.0.0.1"
   port: 8080
+
+# ----------------------------------------------------------
+# Exchange fee schedule
+# ----------------------------------------------------------
+fee:
+  # Default taker fee fraction (Polymarket standard)
+  default_taker_fee: 0.01
+  # Maker fee fraction (currently zero on Polymarket)
+  maker_fee: 0.0
+  # Weather market taker fee (same as default, confirm in CLOB docs)
+  weather_taker_fee: 0.01

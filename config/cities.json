@@ -1,0 +1,182 @@
+[
+  {
+    "city_aliases": ["new york", "nyc", "new york city"],
+    "stations": ["KJFK", "KLGA", "KEWR"],
+    "primary_station": "KJFK",
+    "region": "northeast_us",
+    "country": "US",
+    "lat": 40.6413,
+    "lon": -73.7781
+  },
+  {
+    "city_aliases": ["los angeles", "la"],
+    "stations": ["KLAX", "KVNY"],
+    "primary_station": "KLAX",
+    "region": "southwest_us",
+    "country": "US",
+    "lat": 33.9425,
+    "lon": -118.4081
+  },
+  {
+    "city_aliases": ["chicago"],
+    "stations": ["KORD", "KMDW"],
+    "primary_station": "KORD",
+    "region": "midwest_us",
+    "country": "US",
+    "lat": 41.9742,
+    "lon": -87.9073
+  },
+  {
+    "city_aliases": ["miami"],
+    "stations": ["KMIA", "KFLL"],
+    "primary_station": "KMIA",
+    "region": "southeast_us",
+    "country": "US",
+    "lat": 25.7959,
+    "lon": -80.2870
+  },
+  {
+    "city_aliases": ["phoenix"],
+    "stations": ["KPHX"],
+    "primary_station": "KPHX",
+    "region": "southwest_us",
+    "country": "US",
+    "lat": 33.4373,
+    "lon": -112.0078
+  },
+  {
+    "city_aliases": ["houston"],
+    "stations": ["KIAH", "KHOU"],
+    "primary_station": "KIAH",
+    "region": "south_us",
+    "country": "US",
+    "lat": 29.9902,
+    "lon": -95.3368
+  },
+  {
+    "city_aliases": ["dallas"],
+    "stations": ["KDFW", "KDAL"],
+    "primary_station": "KDFW",
+    "region": "south_us",
+    "country": "US",
+    "lat": 32.8998,
+    "lon": -97.0403
+  },
+  {
+    "city_aliases": ["denver"],
+    "stations": ["KDEN"],
+    "primary_station": "KDEN",
+    "region": "mountain_us",
+    "country": "US",
+    "lat": 39.8561,
+    "lon": -104.6737
+  },
+  {
+    "city_aliases": ["seattle"],
+    "stations": ["KSEA"],
+    "primary_station": "KSEA",
+    "region": "northwest_us",
+    "country": "US",
+    "lat": 47.4502,
+    "lon": -122.3088
+  },
+  {
+    "city_aliases": ["san francisco", "sf"],
+    "stations": ["KSFO"],
+    "primary_station": "KSFO",
+    "region": "west_us",
+    "country": "US",
+    "lat": 37.6189,
+    "lon": -122.3750
+  },
+  {
+    "city_aliases": ["boston"],
+    "stations": ["KBOS"],
+    "primary_station": "KBOS",
+    "region": "northeast_us",
+    "country": "US",
+    "lat": 42.3656,
+    "lon": -71.0096
+  },
+  {
+    "city_aliases": ["atlanta"],
+    "stations": ["KATL"],
+    "primary_station": "KATL",
+    "region": "southeast_us",
+    "country": "US",
+    "lat": 33.6407,
+    "lon": -84.4277
+  },
+  {
+    "city_aliases": ["washington", "dc", "washington dc"],
+    "stations": ["KDCA", "KIAD"],
+    "primary_station": "KDCA",
+    "region": "midatlantic_us",
+    "country": "US",
+    "lat": 38.8512,
+    "lon": -77.0402
+  },
+  {
+    "city_aliases": ["philadelphia", "philly"],
+    "stations": ["KPHL"],
+    "primary_station": "KPHL",
+    "region": "midatlantic_us",
+    "country": "US",
+    "lat": 39.8719,
+    "lon": -75.2411
+  },
+  {
+    "city_aliases": ["minneapolis"],
+    "stations": ["KMSP"],
+    "primary_station": "KMSP",
+    "region": "midwest_us",
+    "country": "US",
+    "lat": 44.8848,
+    "lon": -93.2223
+  },
+  {
+    "city_aliases": ["detroit"],
+    "stations": ["KDTW"],
+    "primary_station": "KDTW",
+    "region": "midwest_us",
+    "country": "US",
+    "lat": 42.2124,
+    "lon": -83.3534
+  },
+  {
+    "city_aliases": ["london"],
+    "stations": ["EGLL", "EGSS"],
+    "primary_station": "EGLL",
+    "region": "uk",
+    "country": "GB",
+    "lat": 51.4775,
+    "lon": -0.4614
+  },
+  {
+    "city_aliases": ["tokyo"],
+    "stations": ["RJTT", "RJAA"],
+    "primary_station": "RJTT",
+    "region": "kanto_jp",
+    "country": "JP",
+    "lat": 35.5494,
+    "lon": 139.7798
+  },
+  {
+    "city_aliases": ["seoul"],
+    "stations": ["RKSI", "RKSS"],
+    "primary_station": "RKSI",
+    "region": "korea",
+    "country": "KR",
+    "lat": 37.4691,
+    "lon": 126.4510
+  },
+  {
+    "city_aliases": ["mexico city"],
+    "stations": ["MMMX"],
+    "primary_station": "MMMX",
+    "region": "mexico",
+    "country": "MX",
+    "lat": 19.4363,
+    "lon": -99.0721
+  }
+]
